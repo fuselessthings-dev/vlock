@@ -34,7 +34,7 @@ jobs:
           mkdir -p dist_web
 
           python3 - << 'PYEOF'
-          import os, base64, hashlib
+          import os, base64, hashlib, struct, zlib, json
           from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
           from cryptography.hazmat.primitives.asymmetric import ec
           from cryptography.hazmat.backends import default_backend
@@ -73,7 +73,94 @@ jobs:
           enc_d_hex = (enc.update(d_raw32) + enc.finalize()).hex()
 
           # =====================================================================
-          # 2. SERVICE WORKER (LOCAL 64-BIT VIDEO STREAMING ONLY)
+          # 1B. GENERATE PWA ICONS & MANIFEST.JSON FOR .VLOCK FILE HANDLER
+          # =====================================================================
+          def make_vlock_png(size):
+              width = height = size
+              rows = []
+              border = max(4, size // 16)
+              for y in range(height):
+                  row = bytearray([0])
+                  for x in range(width):
+                      if x < border or x >= width - border or y < border or y >= height - border:
+                          row.extend((63, 185, 80, 255))
+                      elif (size // 3) <= x < (2 * size // 3) and (size // 3) <= y < (2 * size // 3):
+                          row.extend((63, 185, 80, 255))
+                      else:
+                          row.extend((11, 36, 25, 255))
+                  rows.append(bytes(row))
+              raw = b"".join(rows)
+              def chunk(tag, data):
+                  return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+              return (
+                  b"\x89PNG\r\n\x1a\n"
+                  + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0))
+                  + chunk(b"IDAT", zlib.compress(raw, 9))
+                  + chunk(b"IEND", b"")
+              )
+
+          with open("dist_web/icon-192.png", "wb") as f:
+              f.write(make_vlock_png(192))
+          with open("dist_web/icon-512.png", "wb") as f:
+              f.write(make_vlock_png(512))
+
+          manifest_data = {
+              "id": "./",
+              "name": "VLock — Media Decryption & Player",
+              "short_name": "VLock",
+              "description": "Zero-upload local .vlock video decryption player and encryption studio.",
+              "start_url": "./",
+              "scope": "./",
+              "display": "standalone",
+              "background_color": "#0d1117",
+              "theme_color": "#161b22",
+              "icons": [
+                  {"src": "./icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable"},
+                  {"src": "./icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable"}
+              ],
+              "launch_handler": {
+                  "client_mode": ["focus-existing", "navigate-existing"]
+              },
+              "file_handlers": [
+                  {
+                      "action": "./",
+                      "name": "VLock Encrypted Video",
+                      "accept": {
+                          "application/x-vlock": [".vlock"],
+                          "video/x-vlock": [".vlock"],
+                          "application/octet-stream": [".vlock"]
+                      },
+                      "launch_type": "single-client"
+                  }
+              ],
+              "share_target": {
+                  "action": "./?share-target=1",
+                  "method": "POST",
+                  "enctype": "multipart/form-data",
+                  "params": {
+                      "title": "title",
+                      "text": "text",
+                      "url": "url",
+                      "files": [
+                          {
+                              "name": "media",
+                              "accept": [".vlock", "application/x-vlock", "video/x-vlock", "application/octet-stream"]
+                          }
+                      ]
+                  }
+              },
+              "protocol_handlers": [
+                  {
+                      "protocol": "web+vlock",
+                      "url": "./?vlock=%s"
+                  }
+              ]
+          }
+          with open("dist_web/manifest.json", "w", encoding="utf-8") as f:
+              json.dump(manifest_data, f, indent=2)
+
+          # =====================================================================
+          # 2. SERVICE WORKER (.VLOCK SHARE REDIRECT + 64-BIT VIDEO STREAMING)
           # =====================================================================
           sw_js = r'''self.addEventListener('install', (event) => {
             self.skipWaiting();
@@ -83,8 +170,44 @@ jobs:
             event.waitUntil(self.clients.claim());
           });
 
+          function saveSharedVlockFile(file) {
+            return new Promise((resolve, reject) => {
+              const req = indexedDB.open('vlock_launch_db', 1);
+              req.onupgradeneeded = (e) => {
+                const db = e.target.result;
+                if (!db.objectStoreNames.contains('files')) {
+                  db.createObjectStore('files');
+                }
+              };
+              req.onsuccess = (e) => {
+                const db = e.target.result;
+                const tx = db.transaction('files', 'readwrite');
+                tx.objectStore('files').put(file, 'pending_vlock');
+                tx.oncomplete = () => { db.close(); resolve(); };
+                tx.onerror = (err) => { db.close(); reject(err); };
+              };
+              req.onerror = (err) => reject(err);
+            });
+          }
+
           self.addEventListener('fetch', (event) => {
             const url = new URL(event.request.url);
+
+            // Handle .vlock files opened/shared from mobile apps (Telegram / File Manager)
+            if (event.request.method === 'POST' && url.searchParams.has('share-target')) {
+              event.respondWith((async () => {
+                try {
+                  const formData = await event.request.formData();
+                  const mediaFile = formData.get('media');
+                  if (mediaFile) {
+                    await saveSharedVlockFile(mediaFile);
+                  }
+                } catch (e) {}
+                return Response.redirect('./?shared_vlock=1', 303);
+              })());
+              return;
+            }
+
             if (!url.pathname.includes('/__vlock_stream__/')) return;
 
             event.respondWith((async () => {
@@ -152,6 +275,9 @@ jobs:
             <meta charset="UTF-8" />
             <meta name="viewport" content="width=device-width, initial-scale=1.0" />
             <meta name="theme-color" content="#161b22" />
+            <link rel="manifest" href="./manifest.json" />
+            <link rel="icon" type="image/png" sizes="192x192" href="./icon-192.png" />
+            <link rel="apple-touch-icon" href="./icon-192.png" />
             <title>VLock — User Decryption & Admin Encryption</title>
             <style>
               :root {
@@ -220,6 +346,12 @@ jobs:
                 justify-content: space-between; align-items: center; font-weight: 700; color: var(--green-bright); font-size: 14px; flex-wrap: wrap; gap: 6px;
               }
               .banner-green small { color: #ffffff; font-size: 11px; }
+
+              .redirect-notice {
+                display: none; background: #143d29; border: 1px solid #3fb950; border-radius: 8px;
+                padding: 10px 14px; font-size: 12.5px; color: #ffffff; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap;
+              }
+              .redirect-notice.show { display: flex; }
 
               /* RED ADMIN PANEL */
               .card-red {
@@ -337,7 +469,7 @@ jobs:
               }
               .modal-backdrop.show { display: flex; }
               .modal {
-                background: #161b22; border: 1px solid #30363d; border-radius: 12px; max-width: 460px; width: 100%;
+                background: #161b22; border: 1px solid #30363d; border-radius: 12px; max-width: 480px; width: 100%;
                 padding: 20px; display: flex; flex-direction: column; gap: 14px; box-shadow: 0 12px 40px rgba(0,0,0,0.85);
               }
               .modal h2 { font-size: 17px; color: #ffffff; }
@@ -356,11 +488,13 @@ jobs:
                 <span>User Decryption & Admin Encryption</span>
               </div>
               <div class="top-actions">
+                <button type="button" class="btn btn-green" id="btnAutoOpenSetup">⚡ Auto-Open .vlock</button>
                 <button type="button" class="btn btn-purple" id="btnScrollTutorial">📖 How to Use (Tutorial)</button>
                 <button type="button" class="btn btn-blue" id="btnFullScreen">⛶ Full Screen</button>
                 <button type="button" class="btn btn-dark" id="btnFreeScreen">❐ Free Screen</button>
                 <button type="button" class="btn btn-dots" id="btnDots" title="Menu">⋮</button>
                 <div class="dropdown-menu" id="dotsMenu">
+                  <button type="button" class="dropdown-item" id="menuAutoOpen">Enable .vlock Click-to-Website Redirect</button>
                   <button type="button" class="dropdown-item" id="menuSuperuser">Superuser Panel</button>
                   <button type="button" class="dropdown-item" id="menuTutorial">How to Use & Get Session Key (Tutorial)</button>
                   <button type="button" class="dropdown-item" id="menuSupport">For any issue contact @Modrat_editor using Telegram</button>
@@ -374,10 +508,15 @@ jobs:
               <!-- ======================================================= -->
               <!-- PANEL 1: GREEN USER PANEL — DECRYPTION PANEL            -->
               <!-- ======================================================= -->
-              <div class="card-green">
+              <div class="card-green" id="userDecryptionCard">
                 <div class="banner-green">
                   <span>USER PANEL &nbsp;•&nbsp; Decryption Panel</span>
                   <small>FREE FOREVER • ZERO DATA UPLOAD</small>
+                </div>
+
+                <div class="redirect-notice" id="redirectNoticeBanner">
+                  <span id="redirectNoticeText">Redirected from .vlock file! Tap Select to confirm loading your video.</span>
+                  <button type="button" class="btn btn-green" id="btnConfirmRedirectFile" style="padding:6px 12px;font-size:12px;">Select .vlock File</button>
                 </div>
 
                 <input type="file" id="vlockFileInput" accept=".vlock,*/*" style="display:none" />
@@ -528,18 +667,18 @@ jobs:
                   </div>
 
                   <div class="step-card">
-                    <span class="step-badge badge-green">STEP 2 • SELECT FILE</span>
+                    <span class="step-badge badge-green">STEP 2 • SELECT OR CLICK FILE</span>
                     <div class="step-visual">
                       <svg width="210" height="100" viewBox="0 0 210 100" fill="none">
                         <rect x="15" y="14" width="180" height="72" rx="10" fill="#071710" stroke="#3fb950" stroke-width="2" stroke-dasharray="6 4"/>
                         <rect x="35" y="32" width="36" height="32" rx="4" stroke="#3fb950" stroke-width="2"/>
                         <path d="M53 41 V55 M46 48 H60" stroke="#ffffff" stroke-width="2.5" stroke-linecap="round"/>
-                        <text x="84" y="46" fill="#ffffff" font-size="11" font-weight="bold">Tap or Drop .vlock</text>
-                        <text x="84" y="62" fill="#3fb950" font-size="9">Green User Panel</text>
+                        <text x="84" y="46" fill="#ffffff" font-size="11" font-weight="bold">Tap or Click .vlock</text>
+                        <text x="84" y="62" fill="#3fb950" font-size="9">Auto-Opens in VLock</text>
                       </svg>
                     </div>
-                    <h4>2. Add Video to Green User Panel</h4>
-                    <p>In the green <b>USER PANEL • Decryption Panel</b> at the top, tap the dashed box (or drag & drop your <b>.vlock</b> file directly into it).</p>
+                    <h4>2. Click .vlock or Add to Green Panel</h4>
+                    <p>Tap <b>⚡ Auto-Open .vlock</b> once so clicking any <b>.vlock</b> file automatically redirects here, or tap the dashed box in the green <b>USER PANEL</b>.</p>
                   </div>
 
                   <div class="step-card">
@@ -666,6 +805,29 @@ jobs:
               For any issue contact <a href="https://t.me/Modrat_editor" target="_blank" rel="noopener">@Modrat_editor</a> using Telegram.
             </div>
 
+            <!-- AUTO-OPEN .VLOCK SETUP MODAL -->
+            <div class="modal-backdrop" id="autoOpenModal">
+              <div class="modal">
+                <h2>⚡ Auto-Open .vlock Videos on Click</h2>
+                <p>Enable automatic redirection to this website whenever you click or tap a <b>.vlock</b> video file:</p>
+                <div style="display:flex;flex-direction:column;gap:10px;">
+                  <button type="button" class="btn btn-green" id="btnInstallPwaHandler" style="padding:11px;font-size:13px;">
+                    📲 1. Install VLock Web App (Android / Chrome / Edge)
+                  </button>
+                  <button type="button" class="btn btn-blue" id="btnDownloadWinAssoc" style="padding:11px;font-size:13px;">
+                    💻 2. Download Windows .vlock Auto-Redirect (VLock_AutoOpen.bat)
+                  </button>
+                </div>
+                <p style="font-size:11.5px;color:#8b949e;">
+                  • <b>Option 1 (Web App):</b> Registers <b>.vlock</b> directly with your browser/phone so clicking or sharing a <b>.vlock</b> file opens VLock and loads the video automatically.<br/>
+                  • <b>Option 2 (Windows PC):</b> Double-click the downloaded <b>VLock_AutoOpen.bat</b> once. Clicking any <b>.vlock</b> file in Windows Explorer or Telegram Desktop will immediately redirect to this website!
+                </p>
+                <div style="display:flex;justify-content:flex-end;">
+                  <button type="button" class="btn btn-dark" id="btnCloseAutoOpenModal">Close</button>
+                </div>
+              </div>
+            </div>
+
             <!-- SUPERUSER MODAL -->
             <div class="modal-backdrop" id="superuserModal">
               <div class="modal">
@@ -735,6 +897,12 @@ jobs:
               let verifiedSuPassword = "";
               let activeStreamSessions = {};
               let currentObjectUrl = null;
+              let deferredInstallPrompt = null;
+
+              window.addEventListener('beforeinstallprompt', (e) => {
+                e.preventDefault();
+                deferredInstallPrompt = e;
+              });
 
               function hexToBytes(hex) {
                 const out = new Uint8Array(hex.length / 2);
@@ -816,7 +984,7 @@ jobs:
               }
 
               // =========================================================================
-              // SERVICE WORKER REGISTRATION (FOR LOCAL STREAMING ONLY)
+              // SERVICE WORKER REGISTRATION & .VLOCK FILE LAUNCH / SHARE HANDLERS
               // =========================================================================
               if ('serviceWorker' in navigator) {
                 navigator.serviceWorker.register('./sw.js').catch(() => {});
@@ -858,6 +1026,89 @@ jobs:
                 selectedVlockFile = file;
                 const sizeMb = (file.size / (1024 * 1024)).toFixed(1);
                 document.getElementById('viewerFileTitle').textContent = `Ready to Unlock: ${file.name} (${sizeMb} MB)`;
+                document.getElementById('redirectNoticeBanner').classList.remove('show');
+                const card = document.getElementById('userDecryptionCard');
+                if (card) card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                const keyInput = document.getElementById('viewerKeyInput');
+                if (keyInput) keyInput.focus();
+              }
+
+              // 1. OS / PWA File Handler (when user clicks a .vlock video in Explorer / Finder / Files)
+              if ('launchQueue' in window && 'setConsumer' in window.launchQueue) {
+                window.launchQueue.setConsumer(async (launchParams) => {
+                  if (launchParams && launchParams.files && launchParams.files.length > 0) {
+                    try {
+                      const fileHandle = launchParams.files[0];
+                      const file = await fileHandle.getFile();
+                      if (file) onVlockFilePicked(file);
+                    } catch (e) {}
+                  }
+                });
+              }
+
+              // 2. Mobile Share Target Handler (when user taps .vlock in Telegram -> Open With / Share -> VLock)
+              function checkPendingSharedVlockFile() {
+                try {
+                  const req = indexedDB.open('vlock_launch_db', 1);
+                  req.onupgradeneeded = (e) => {
+                    const db = e.target.result;
+                    if (!db.objectStoreNames.contains('files')) db.createObjectStore('files');
+                  };
+                  req.onsuccess = (e) => {
+                    const db = e.target.result;
+                    if (!db.objectStoreNames.contains('files')) { db.close(); return; }
+                    const tx = db.transaction('files', 'readwrite');
+                    const store = tx.objectStore('files');
+                    const getReq = store.get('pending_vlock');
+                    getReq.onsuccess = () => {
+                      if (getReq.result) {
+                        onVlockFilePicked(getReq.result);
+                        store.delete('pending_vlock');
+                      }
+                    };
+                    tx.oncomplete = () => db.close();
+                  };
+                } catch (e) {}
+              }
+
+              // 3. URL Redirect Handler (when Windows .vlock registry association redirects to website)
+              function checkUrlRedirectParams() {
+                const params = new URLSearchParams(window.location.search);
+                if (params.has('shared_vlock')) {
+                  checkPendingSharedVlockFile();
+                  window.history.replaceState({}, document.title, window.location.pathname);
+                }
+                const clickedPath = params.get('vlock_file') || params.get('vlock');
+                if (clickedPath) {
+                  const cleanName = clickedPath.split(/[\\/]/).pop();
+                  const banner = document.getElementById('redirectNoticeBanner');
+                  const textEl = document.getElementById('redirectNoticeText');
+                  textEl.textContent = cleanName
+                    ? `Redirected from "${cleanName}"! Tap Select to load it into the player:`
+                    : `Redirected from .vlock file! Tap Select to load it into the player:`;
+                  banner.classList.add('show');
+                  document.getElementById('userDecryptionCard').scrollIntoView({ behavior: 'smooth' });
+                  window.history.replaceState({}, document.title, window.location.pathname);
+                }
+              }
+
+              function downloadWindowsAutoOpenScript() {
+                const siteUrl = window.location.origin + window.location.pathname;
+                const batLines = [
+                  "@echo off",
+                  "title VLock .vlock Auto-Redirect Setup",
+                  "echo Registering .vlock video files to automatically open VLock Online...",
+                  `reg add "HKCU\\Software\\Classes\\.vlock" /ve /d "VLock.MediaFile" /f >nul`,
+                  `reg add "HKCU\\Software\\Classes\\VLock.MediaFile" /ve /d "VLock Encrypted Video" /f >nul`,
+                  `reg add "HKCU\\Software\\Classes\\VLock.MediaFile\\shell\\open\\command" /ve /d "cmd.exe /c start \\"\\" \\"${siteUrl}?vlock_file=%%~nx1\\"" /f >nul`,
+                  "echo.",
+                  "echo SUCCESS! Clicking any .vlock file will now automatically redirect to:",
+                  `echo ${siteUrl}`,
+                  "echo.",
+                  "pause"
+                ];
+                const blob = new Blob([batLines.join("\r\n")], { type: "application/x-bat" });
+                saveBlobToDisk(blob, "VLock_AutoOpen_Windows.bat");
               }
 
               function onRawMediaPicked(file) {
@@ -1443,9 +1694,48 @@ jobs:
 
               document.addEventListener('DOMContentLoaded', () => {
                 refreshAdminLockUI();
+                checkPendingSharedVlockFile();
+                checkUrlRedirectParams();
 
                 bindDropZone('viewerDropZone', 'vlockFileInput', onVlockFilePicked);
                 bindDropZone('encryptDropZone', 'rawMediaInput', onRawMediaPicked);
+
+                // Global drag-and-drop anywhere on window for .vlock files
+                window.addEventListener('dragover', (e) => e.preventDefault());
+                window.addEventListener('drop', (e) => {
+                  if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                    const f = e.dataTransfer.files[0];
+                    if (f.name.toLowerCase().endsWith('.vlock')) {
+                      e.preventDefault();
+                      onVlockFilePicked(f);
+                    }
+                  }
+                });
+
+                document.getElementById('btnConfirmRedirectFile').addEventListener('click', () => {
+                  document.getElementById('vlockFileInput').click();
+                });
+
+                const openAutoSetupModal = () => {
+                  document.getElementById('autoOpenModal').classList.add('show');
+                };
+                document.getElementById('btnAutoOpenSetup').addEventListener('click', openAutoSetupModal);
+                document.getElementById('menuAutoOpen').addEventListener('click', openAutoSetupModal);
+                document.getElementById('btnCloseAutoOpenModal').addEventListener('click', () => {
+                  document.getElementById('autoOpenModal').classList.remove('show');
+                });
+
+                document.getElementById('btnInstallPwaHandler').addEventListener('click', async () => {
+                  if (deferredInstallPrompt) {
+                    deferredInstallPrompt.prompt();
+                    await deferredInstallPrompt.userChoice;
+                    deferredInstallPrompt = null;
+                  } else {
+                    alert("To enable direct .vlock opening in your browser:\n\n• On Android Chrome/Edge: Tap the browser menu (⋮) -> 'Install app' or 'Add to Home screen'.\n• On PC Chrome/Edge: Click the Install icon in the right side of the address bar (or use Option 2 below for Windows).");
+                  }
+                });
+
+                document.getElementById('btnDownloadWinAssoc').addEventListener('click', downloadWindowsAutoOpenScript);
 
                 document.getElementById('tabBtnUser').addEventListener('click', () => switchTutorialTab('user'));
                 document.getElementById('tabBtnAdmin').addEventListener('click', () => switchTutorialTab('admin'));
