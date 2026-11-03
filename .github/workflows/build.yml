@@ -26,20 +26,148 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Build VLock Web App with Zero-Knowledge JWK Vault
+      - name: Generate Locked File Icons, PWA Manifest & VLock Web App
         env:
           SUPERUSER_PASSWORD: ${{ secrets.SUPERUSER_PASSWORD }}
         run: |
-          pip install cryptography>=42.0.0
+          pip install cryptography>=42.0.0 pillow>=10.0.0
           mkdir -p dist_web
 
           python3 - << 'PYEOF'
           import os, base64, hashlib
+          from PIL import Image, ImageDraw
           from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
           from cryptography.hazmat.primitives.asymmetric import ec
           from cryptography.hazmat.backends import default_backend
 
-          # Use GitHub Secret if configured, otherwise fallback to default key derivation
+          # =====================================================================
+          # 1. GENERATE CUSTOM "LOCKED VIDEO FILE" ICONS (.ICO & .PNG)
+          # =====================================================================
+          def create_locked_video_icon(size=512):
+              img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+              draw = ImageDraw.Draw(img)
+              s = size / 512.0
+
+              # Outer dark obsidian file card with emerald & crimson security border
+              draw.rounded_rectangle(
+                  [int(24*s), int(16*s), int(488*s), int(496*s)],
+                  radius=int(72*s),
+                  fill=(13, 17, 23, 255),
+                  outline=(46, 160, 67, 255),
+                  width=max(2, int(14*s))
+              )
+
+              # Inner glowing vault ring
+              draw.rounded_rectangle(
+                  [int(48*s), int(40*s), int(464*s), int(472*s)],
+                  radius=int(52*s),
+                  fill=(18, 26, 36, 255),
+                  outline=(218, 54, 51, 200),
+                  width=max(1, int(6*s))
+              )
+
+              # Padlock Shackle (Top U-Loop)
+              draw.arc(
+                  [int(176*s), int(76*s), int(336*s), int(246*s)],
+                  start=180, end=360,
+                  fill=(63, 185, 80, 255),
+                  width=max(3, int(28*s))
+              )
+              draw.line([int(190*s), int(160*s), int(190*s), int(215*s)], fill=(63, 185, 80, 255), width=max(3, int(28*s)))
+              draw.line([int(322*s), int(160*s), int(322*s), int(215*s)], fill=(63, 185, 80, 255), width=max(3, int(28*s)))
+
+              # Padlock Body (Center Shield)
+              draw.rounded_rectangle(
+                  [int(136*s), int(204*s), int(376*s), int(416*s)],
+                  radius=int(36*s),
+                  fill=(20, 61, 41, 255),
+                  outline=(63, 185, 80, 255),
+                  width=max(2, int(12*s))
+              )
+
+              # Video Play Triangle inside Padlock Body
+              play_pts = [
+                  (int(224*s), int(258*s)),
+                  (int(224*s), int(362*s)),
+                  (int(314*s), int(310*s))
+              ]
+              draw.polygon(play_pts, fill=(255, 255, 255, 255))
+
+              # Film sprocket accents on left & right sides
+              for y_off in (110, 190, 270, 350):
+                  draw.rounded_rectangle(
+                      [int(68*s), int(y_off*s), int(96*s), int((y_off+42)*s)],
+                      radius=int(6*s),
+                      fill=(48, 54, 61, 255)
+                  )
+                  draw.rounded_rectangle(
+                      [int(416*s), int(y_off*s), int(444*s), int((y_off+42)*s)],
+                      radius=int(6*s),
+                      fill=(48, 54, 61, 255)
+                  )
+
+              return img
+
+          icon512 = create_locked_video_icon(512)
+          icon192 = create_locked_video_icon(192)
+          icon512.save("dist_web/icon-512.png", format="PNG")
+          icon192.save("dist_web/icon-192.png", format="PNG")
+          icon512.save(
+              "dist_web/vlock_locked.ico",
+              format="ICO",
+              sizes=[(256, 256), (128, 128), (64, 64), (48, 48), (32, 32), (16, 16)]
+          )
+
+          # =====================================================================
+          # 2. GENERATE PWA MANIFEST WITH .VLOCK FILE HANDLER & LOCKED ICON
+          # =====================================================================
+          manifest_json = '''{
+            "name": "VLock — Video Decryption & Admin Encryption",
+            "short_name": "VLock",
+            "description": "Watch and encrypt .vlock protected media files online.",
+            "start_url": "./index.html",
+            "scope": "./",
+            "display": "standalone",
+            "background_color": "#0d1117",
+            "theme_color": "#161b22",
+            "icons": [
+              {
+                "src": "./icon-192.png",
+                "sizes": "192x192",
+                "type": "image/png",
+                "purpose": "any maskable"
+              },
+              {
+                "src": "./icon-512.png",
+                "sizes": "512x512",
+                "type": "image/png",
+                "purpose": "any maskable"
+              }
+            ],
+            "file_handlers": [
+              {
+                "action": "./index.html",
+                "accept": {
+                  "application/vnd.vlock": [".vlock"],
+                  "application/octet-stream": [".vlock"]
+                },
+                "icons": [
+                  {
+                    "src": "./icon-192.png",
+                    "sizes": "192x192",
+                    "type": "image/png"
+                  }
+                ],
+                "launch_type": "single-client"
+              }
+            ]
+          }'''
+          with open("dist_web/manifest.json", "w", encoding="utf-8") as f:
+              f.write(manifest_json)
+
+          # =====================================================================
+          # 3. ZERO-KNOWLEDGE VAULT GENERATION (FROM GITHUB SECRET)
+          # =====================================================================
           secret_pwd = os.environ.get("SUPERUSER_PASSWORD", "").strip()
           if secret_pwd:
               _k = secret_pwd.encode("utf-8")
@@ -50,7 +178,6 @@ jobs:
           kdf = hashlib.pbkdf2_hmac("sha256", _k, salt, 200000, dklen=32)
           verifier = hashlib.sha256(kdf + b"VLOCK_SU_AUTH_v2").hexdigest()
 
-          # Deterministic ECDSA P-256 Keypair exported as clean WebCrypto JWK coordinates
           scalar_bytes = hashlib.pbkdf2_hmac("sha256", kdf + b"ECDSA_P256_KEY", salt, 10000, dklen=32)
           private_value = int.from_bytes(scalar_bytes, "big") % (
               0xFFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551 - 1
@@ -67,11 +194,13 @@ jobs:
           pub_y_b64u = to_b64u(pub_nums.y)
           d_raw32 = priv_nums.private_value.to_bytes(32, "big")
 
-          # Encrypt the 32-byte ECDSA private scalar 'd' using AES-256-CTR with the 200,000-round PBKDF2 key
           cipher = Cipher(algorithms.AES(kdf), modes.CTR(salt[:8] + b"\x00" * 8), backend=default_backend())
           enc = cipher.encryptor()
           enc_d_hex = (enc.update(d_raw32) + enc.finalize()).hex()
 
+          # =====================================================================
+          # 4. SERVICE WORKER (64-BIT STREAMING + PWA SUPPORT)
+          # =====================================================================
           sw_js = r'''self.addEventListener('install', (event) => {
             self.skipWaiting();
           });
@@ -137,16 +266,22 @@ jobs:
             })());
           });
           '''
-
           with open("dist_web/sw.js", "w", encoding="utf-8") as f:
               f.write(sw_js)
 
+          # =====================================================================
+          # 5. MAIN WEB APP (INDEX.HTML WITH VISUAL TUTORIAL & ICON REDIRECT)
+          # =====================================================================
           index_html = r'''<!DOCTYPE html>
           <html lang="en">
           <head>
             <meta charset="UTF-8" />
             <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+            <meta name="theme-color" content="#161b22" />
             <title>VLock — User Decryption & Admin Encryption</title>
+            <link rel="manifest" href="./manifest.json" />
+            <link rel="icon" type="image/png" href="./icon-192.png" />
+            <link rel="apple-touch-icon" href="./icon-192.png" />
             <style>
               :root {
                 --bg-dark: #0d1117;
@@ -164,16 +299,20 @@ jobs:
               body { background: var(--bg-dark); color: #ffffff; min-height: 100vh; display: flex; flex-direction: column; }
 
               .topbar {
-                background: var(--header-bg); padding: 12px 20px; display: flex; align-items: center;
+                background: var(--header-bg); padding: 11px 18px; display: flex; align-items: center;
                 justify-content: space-between; border-bottom: 1px solid #30363d; position: sticky; top: 0; z-index: 100;
+                flex-wrap: wrap; gap: 10px;
               }
-              .brand { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
-              .brand h1 { font-size: 20px; font-weight: 800; color: #ffffff; }
-              .brand span { font-size: 12px; color: #8b949e; }
-              .top-actions { display: flex; align-items: center; gap: 8px; position: relative; }
+              .brand { display: flex; align-items: center; gap: 10px; }
+              .brand img { width: 32px; height: 32px; border-radius: 7px; }
+              .brand h1 { font-size: 19px; font-weight: 800; color: #ffffff; }
+              .brand span { font-size: 12px; color: #8b949e; display: none; }
+              @media (min-width: 640px) { .brand span { display: inline; } }
+
+              .top-actions { display: flex; align-items: center; gap: 7px; position: relative; flex-wrap: wrap; }
 
               .btn {
-                border: none; border-radius: 7px; padding: 8px 14px; font-size: 13px; font-weight: 700;
+                border: none; border-radius: 7px; padding: 8px 13px; font-size: 12.5px; font-weight: 700;
                 cursor: pointer; color: #ffffff; transition: opacity 0.15s, transform 0.1s;
                 display: inline-flex; align-items: center; justify-content: center; gap: 6px; text-decoration: none;
               }
@@ -181,14 +320,15 @@ jobs:
               .btn:active { transform: scale(0.98); }
               .btn:disabled { opacity: 0.5; cursor: not-allowed; }
               .btn-blue { background: #1f6feb; }
+              .btn-purple { background: #8957e5; }
               .btn-dark { background: #21262d; border: 1px solid #30363d; color: #c9d1d9; }
               .btn-green { background: var(--green-border); }
               .btn-red { background: var(--red-border); }
-              .btn-dots { width: 40px; height: 38px; font-size: 22px; padding: 0; background: #21262d; border: 1px solid #30363d; }
+              .btn-dots { width: 38px; height: 36px; font-size: 21px; padding: 0; background: #21262d; border: 1px solid #30363d; }
 
               .dropdown-menu {
-                position: absolute; top: 46px; right: 0; background: #161b22; border: 1px solid #30363d;
-                border-radius: 8px; width: 320px; box-shadow: 0 12px 32px rgba(0,0,0,0.75);
+                position: absolute; top: 44px; right: 0; background: #161b22; border: 1px solid #30363d;
+                border-radius: 8px; width: 320px; box-shadow: 0 12px 32px rgba(0,0,0,0.8);
                 display: none; flex-direction: column; overflow: hidden; z-index: 250;
               }
               .dropdown-menu.show { display: flex; }
@@ -198,7 +338,19 @@ jobs:
               }
               .dropdown-item:hover { background: #1f6feb; color: #ffffff; }
 
-              .container { max-width: 840px; width: 100%; margin: 0 auto; padding: 16px; flex: 1; display: flex; flex-direction: column; gap: 18px; }
+              .container { max-width: 880px; width: 100%; margin: 0 auto; padding: 16px; flex: 1; display: flex; flex-direction: column; gap: 18px; }
+
+              /* AUTO-REDIRECT & LOCKED ICON SETUP BANNER */
+              .setup-strip {
+                background: linear-gradient(90deg, #111927 0%, #161b22 100%);
+                border: 1px solid #30363d; border-radius: 10px; padding: 12px 16px;
+                display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+              }
+              .setup-strip-left { display: flex; align-items: center; gap: 12px; }
+              .setup-strip-left img { width: 40px; height: 40px; border-radius: 8px; flex-shrink: 0; }
+              .setup-strip-left h4 { font-size: 13.5px; color: #58a6ff; margin-bottom: 2px; }
+              .setup-strip-left p { font-size: 11.5px; color: #8b949e; }
+              .setup-strip-btns { display: flex; gap: 8px; flex-wrap: wrap; }
 
               /* GREEN USER PANEL */
               .card-green {
@@ -207,7 +359,7 @@ jobs:
               }
               .banner-green {
                 background: var(--green-banner); padding: 9px 14px; border-radius: 7px; display: flex;
-                justify-content: space-between; align-items: center; font-weight: 700; color: var(--green-bright); font-size: 14px;
+                justify-content: space-between; align-items: center; font-weight: 700; color: var(--green-bright); font-size: 14px; flex-wrap: wrap; gap: 6px;
               }
               .banner-green small { color: #ffffff; font-size: 11px; }
 
@@ -218,11 +370,11 @@ jobs:
               }
               .banner-red {
                 background: var(--red-banner); padding: 9px 14px; border-radius: 7px; display: flex;
-                justify-content: space-between; align-items: center; font-weight: 700; color: var(--red-bright); font-size: 14px;
+                justify-content: space-between; align-items: center; font-weight: 700; color: var(--red-bright); font-size: 14px; flex-wrap: wrap; gap: 6px;
               }
               .banner-red small { color: #ffa198; font-size: 11px; }
 
-              /* EDITING SOFTWARE DROP ZONE (CORNER BRACKETS + MEDIA FRAME + '+', NO UPLOAD ARROW) */
+              /* EDITING SOFTWARE DROP ZONE */
               .nle-dropzone {
                 border: 2px dashed var(--green-bright); border-radius: 10px; padding: 16px; display: flex;
                 align-items: center; gap: 16px; cursor: pointer; transition: background 0.15s, border-color 0.15s;
@@ -276,12 +428,53 @@ jobs:
               }
               .save-path-bar span { font-family: Consolas, monospace; font-size: 11px; color: #ffdcd7; word-break: break-all; }
 
+              /* ======================================================= */
+              /* VISUAL TUTORIAL SECTION WITH ILLUSTRATED GRAPHIC CARDS  */
+              /* ======================================================= */
+              .tutorial-card {
+                background: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 18px;
+                display: flex; flex-direction: column; gap: 16px;
+              }
+              .tutorial-header {
+                display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;
+                border-bottom: 1px solid #21262d; padding-bottom: 12px;
+              }
+              .tutorial-header h2 { font-size: 17px; color: #ffffff; display: flex; align-items: center; gap: 8px; }
+              .tutorial-tabs { display: flex; gap: 8px; flex-wrap: wrap; }
+              .tab-btn {
+                background: #21262d; border: 1px solid #30363d; color: #c9d1d9; padding: 7px 13px;
+                border-radius: 7px; font-size: 12px; font-weight: 700; cursor: pointer;
+              }
+              .tab-btn.active-green { background: #143d29; border-color: #3fb950; color: #3fb950; }
+              .tab-btn.active-red { background: #42141b; border-color: #ff7b72; color: #ff7b72; }
+              .tab-btn.active-blue { background: #1f6feb; border-color: #58a6ff; color: #ffffff; }
+
+              .tutorial-grid {
+                display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px;
+              }
+              .step-card {
+                background: #0d1117; border: 1px solid #30363d; border-radius: 10px; padding: 14px;
+                display: flex; flex-direction: column; gap: 10px;
+              }
+              .step-badge {
+                display: inline-flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 800;
+                padding: 4px 10px; border-radius: 20px; width: fit-content;
+              }
+              .badge-green { background: #143d29; color: #3fb950; }
+              .badge-red { background: #42141b; color: #ff7b72; }
+              .badge-blue { background: #1f3a60; color: #58a6ff; }
+              .step-visual {
+                width: 100%; height: 120px; background: #11161f; border: 1px solid #21262d;
+                border-radius: 8px; display: flex; align-items: center; justify-content: center; overflow: hidden;
+              }
+              .step-card h4 { font-size: 14px; color: #ffffff; }
+              .step-card p { font-size: 12px; color: #8b949e; line-height: 1.45; }
+
               .footer {
                 text-align: center; padding: 14px; font-size: 12px; color: #8b949e; border-top: 1px solid #161b22;
               }
               .footer a { color: #58a6ff; text-decoration: underline; cursor: pointer; }
 
-              /* MODAL DIALOGS */
               .modal-backdrop {
                 position: fixed; inset: 0; background: rgba(0,0,0,0.8); display: none; align-items: center;
                 justify-content: center; padding: 16px; z-index: 300;
@@ -303,15 +496,18 @@ jobs:
             <!-- TOP BAR -->
             <div class="topbar">
               <div class="brand">
+                <img src="./icon-192.png" alt="VLock Icon" />
                 <h1>VLock</h1>
                 <span>User Decryption & Admin Encryption</span>
               </div>
               <div class="top-actions">
+                <button type="button" class="btn btn-purple" id="btnScrollTutorial">📖 How to Use (Tutorial)</button>
                 <button type="button" class="btn btn-blue" id="btnFullScreen">⛶ Full Screen</button>
                 <button type="button" class="btn btn-dark" id="btnFreeScreen">❐ Free Screen</button>
                 <button type="button" class="btn btn-dots" id="btnDots" title="Menu">⋮</button>
                 <div class="dropdown-menu" id="dotsMenu">
                   <button type="button" class="dropdown-item" id="menuSuperuser">Superuser Panel</button>
+                  <button type="button" class="dropdown-item" id="menuTutorial">How to Use & Get Session Key (Tutorial)</button>
                   <button type="button" class="dropdown-item" id="menuSupport">For any issue contact @Modrat_editor using Telegram</button>
                   <button type="button" class="dropdown-item" id="menuCopyright">Copyright & Legal Notice</button>
                 </div>
@@ -319,6 +515,27 @@ jobs:
             </div>
 
             <div class="container">
+
+              <!-- ======================================================= -->
+              <!-- LOCKED FILE ICON & AUTO-OPEN REDIRECT BAR               -->
+              <!-- ======================================================= -->
+              <div class="setup-strip">
+                <div class="setup-strip-left">
+                  <img src="./icon-192.png" alt="Locked Video Icon" />
+                  <div>
+                    <h4>Want .vlock files to show a Locked Video Icon & open this website automatically?</h4>
+                    <p>Enable 1-click file redirect and replace the default file icon on Windows & Android:</p>
+                  </div>
+                </div>
+                <div class="setup-strip-btns">
+                  <button type="button" class="btn btn-green" id="btnInstallPwa" style="padding:7px 12px;font-size:12px;">
+                    📲 Install VLock Web App (Auto-Open .vlock)
+                  </button>
+                  <button type="button" class="btn btn-blue" id="btnDownloadWinHelper" style="padding:7px 12px;font-size:12px;">
+                    🔒 Windows: Set Locked Icon & Auto-Open (.bat)
+                  </button>
+                </div>
+              </div>
 
               <!-- ======================================================= -->
               <!-- PANEL 1: GREEN USER PANEL — DECRYPTION PANEL            -->
@@ -372,7 +589,9 @@ jobs:
 
                 <!-- LOCKED STATE -->
                 <div id="adminLockedSection" style="display:flex;flex-direction:column;gap:10px;">
-                  <p style="font-size:12px;color:#ffdcd7;">Admin Encryption Panel is locked. Enter a valid Session Key from the Superuser Panel (⋮) to unlock:</p>
+                  <p style="font-size:12px;color:#ffdcd7;">
+                    Admin Encryption Panel is locked. Enter a valid Session Key to unlock (Need a Session Key? Contact <a href="https://t.me/Modrat_editor" target="_blank" style="color:#58a6ff;font-weight:700;">@Modrat_editor</a> on Telegram):
+                  </p>
                   <div class="input-row">
                     <input type="text" id="sessionKeyInput" class="input-box red-input" placeholder="VLKS-XXXX-XXXXXXXX-..." />
                     <button type="button" class="btn btn-dark" id="btnPasteSessionKey" style="background:#42141b;border-color:#da3633;color:#fff">Paste Session Key</button>
@@ -418,7 +637,6 @@ jobs:
 
                   <span id="encryptStatusText" style="font-size:12px;color:#ffa198;">Ready. Set Temporary Keys or check Permanent Masterkey (or both).</span>
 
-                  <!-- INSTANT GENERATED KEYS BOX -->
                   <div class="keys-output-box" id="keysOutputBox">
                     <div style="display:flex;justify-content:space-between;align-items:center;">
                       <span style="font-size:12px;font-weight:700;color:#3fb950;">Generated Keys (bot_keys.txt):</span>
@@ -437,6 +655,177 @@ jobs:
                   <div style="display:flex;gap:6px;">
                     <button type="button" class="btn btn-dark" id="btnChangeSavePath" style="background:#42141b;border-color:#da3633;color:#fff;padding:5px 10px;font-size:11px;">Change Save Path</button>
                     <button type="button" class="btn btn-dark" id="btnResetSavePath" style="padding:5px 10px;font-size:11px;">Reset Default</button>
+                  </div>
+                </div>
+              </div>
+
+              <!-- ======================================================= -->
+              <!-- VISUAL STEP-BY-STEP TUTORIAL WITH ILLUSTRATED PICTURES  -->
+              <!-- ======================================================= -->
+              <div class="tutorial-card" id="tutorialSection">
+                <div class="tutorial-header">
+                  <h2>📖 Visual Tutorial — How to Use VLock</h2>
+                  <div class="tutorial-tabs">
+                    <button type="button" class="tab-btn active-green" id="tabBtnUser">1. Watch Video (User Guide)</button>
+                    <button type="button" class="tab-btn" id="tabBtnAdmin">2. Encrypt Video (Admin Guide)</button>
+                    <button type="button" class="tab-btn" id="tabBtnSession">3. Get Session Key (@Modrat_editor)</button>
+                  </div>
+                </div>
+
+                <!-- TAB 1: USER PANEL GUIDE (FREE FOREVER) -->
+                <div class="tutorial-grid" id="tutGridUser">
+                  <div class="step-card">
+                    <span class="step-badge badge-green">STEP 1 • DOWNLOAD</span>
+                    <div class="step-visual">
+                      <!-- Visual Picture: Telegram File Download + Locked Video Icon -->
+                      <svg width="210" height="100" viewBox="0 0 210 100" fill="none">
+                        <rect x="10" y="15" width="75" height="70" rx="10" fill="#1b2738" stroke="#388bfd" stroke-width="2"/>
+                        <text x="47" y="45" fill="#58a6ff" font-size="11" font-weight="bold" text-anchor="middle">Telegram</text>
+                        <text x="47" y="62" fill="#8b949e" font-size="9" text-anchor="middle">Episode.vlock</text>
+                        <path d="M95 50 H120 M114 44 L122 50 L114 56" stroke="#3fb950" stroke-width="2.5" stroke-linecap="round"/>
+                        <rect x="130" y="15" width="70" height="70" rx="12" fill="#0b2419" stroke="#3fb950" stroke-width="2"/>
+                        <rect x="151" y="42" width="28" height="24" rx="4" fill="#143d29" stroke="#3fb950" stroke-width="2"/>
+                        <path d="M157 42 V35 A8 8 0 0 1 173 35 V42" stroke="#3fb950" stroke-width="2"/>
+                        <polygon points="162,49 162,59 171,54" fill="#ffffff"/>
+                        <text x="165" y="78" fill="#3fb950" font-size="9" font-weight="bold" text-anchor="middle">.vlock File</text>
+                      </svg>
+                    </div>
+                    <h4>1. Download the .vlock Video</h4>
+                    <p>Download the encrypted <b>.vlock</b> video file from our Telegram channel onto your phone or PC, and get your <b>One-Time Key</b> from the Telegram Bot.</p>
+                  </div>
+
+                  <div class="step-card">
+                    <span class="step-badge badge-green">STEP 2 • SELECT FILE</span>
+                    <div class="step-visual">
+                      <!-- Visual Picture: Green Drop Zone with [ + ] Frame -->
+                      <svg width="210" height="100" viewBox="0 0 210 100" fill="none">
+                        <rect x="15" y="14" width="180" height="72" rx="10" fill="#071710" stroke="#3fb950" stroke-width="2" stroke-dasharray="6 4"/>
+                        <rect x="35" y="32" width="36" height="32" rx="4" stroke="#3fb950" stroke-width="2"/>
+                        <path d="M53 41 V55 M46 48 H60" stroke="#ffffff" stroke-width="2.5" stroke-linecap="round"/>
+                        <text x="84" y="46" fill="#ffffff" font-size="11" font-weight="bold">Tap or Drop .vlock</text>
+                        <text x="84" y="62" fill="#3fb950" font-size="9">Green User Panel</text>
+                      </svg>
+                    </div>
+                    <h4>2. Add Video to Green User Panel</h4>
+                    <p>In the green <b>USER PANEL • Decryption Panel</b> at the top, tap the dashed box (or drag & drop your <b>.vlock</b> file directly into it).</p>
+                  </div>
+
+                  <div class="step-card">
+                    <span class="step-badge badge-green">STEP 3 • PASTE KEY & WATCH</span>
+                    <div class="step-visual">
+                      <!-- Visual Picture: Paste Key + Cinema Player -->
+                      <svg width="210" height="100" viewBox="0 0 210 100" fill="none">
+                        <rect x="15" y="14" width="125" height="28" rx="6" fill="#071710" stroke="#2ea043" stroke-width="1.5"/>
+                        <text x="77" y="32" fill="#3fb950" font-family="monospace" font-size="9" font-weight="bold" text-anchor="middle">VLOCK-9A2F-...</text>
+                        <rect x="146" y="14" width="49" height="28" rx="6" fill="#1b4332"/>
+                        <text x="170" y="32" fill="#ffffff" font-size="9" font-weight="bold" text-anchor="middle">Paste</text>
+                        <rect x="15" y="50" width="180" height="36" rx="7" fill="#2ea043"/>
+                        <polygon points="62,62 62,74 73,68" fill="#ffffff"/>
+                        <text x="115" y="72" fill="#ffffff" font-size="11" font-weight="bold" text-anchor="middle">Decrypt & Watch</text>
+                      </svg>
+                    </div>
+                    <h4>3. Paste Key & Watch</h4>
+                    <p>Click <b>Paste Key</b> to paste your key from the Bot, then tap <b>Decrypt & Watch</b>. The video plays right inside the built-in player with zero data usage!</p>
+                  </div>
+                </div>
+
+                <!-- TAB 2: ADMIN PANEL GUIDE (ENCRYPT VIDEO) -->
+                <div class="tutorial-grid" id="tutGridAdmin" style="display:none;">
+                  <div class="step-card">
+                    <span class="step-badge badge-red">STEP 1 • UNLOCK ADMIN</span>
+                    <div class="step-visual">
+                      <!-- Visual Picture: Session Key Unlock -->
+                      <svg width="210" height="100" viewBox="0 0 210 100" fill="none">
+                        <rect x="15" y="16" width="180" height="28" rx="6" fill="#140507" stroke="#da3633" stroke-width="1.5"/>
+                        <text x="105" y="34" fill="#ff7b72" font-family="monospace" font-size="9" font-weight="bold" text-anchor="middle">VLKS-1M-8F92A1B0-...</text>
+                        <rect x="15" y="52" width="180" height="32" rx="6" fill="#da3633"/>
+                        <text x="105" y="72" fill="#ffffff" font-size="10" font-weight="bold" text-anchor="middle">Unlock Admin Encryption Panel</text>
+                      </svg>
+                    </div>
+                    <h4>1. Enter Your Session Key</h4>
+                    <p>In the red <b>ADMIN • Encryption Panel</b>, click <b>Paste Session Key</b> and tap <b>Unlock Admin Encryption Panel</b>. It stays unlocked for your key's duration.</p>
+                  </div>
+
+                  <div class="step-card">
+                    <span class="step-badge badge-red">STEP 2 • CHOOSE KEYS</span>
+                    <div class="step-visual">
+                      <!-- Visual Picture: Temp Keys + Permanent Masterkey Checkbox -->
+                      <svg width="210" height="100" viewBox="0 0 210 100" fill="none">
+                        <rect x="15" y="20" width="65" height="28" rx="6" fill="#140507" stroke="#da3633" stroke-width="1.5"/>
+                        <text x="47" y="38" fill="#ff7b72" font-family="monospace" font-size="11" font-weight="bold" text-anchor="middle">1000</text>
+                        <rect x="92" y="24" width="20" height="20" rx="4" fill="#da3633"/>
+                        <path d="M97 34 L101 38 L108 29" stroke="#ffffff" stroke-width="2.5" stroke-linecap="round"/>
+                        <text x="118" y="38" fill="#ffffff" font-size="9.5" font-weight="bold">Permanent Master</text>
+                        <text x="15" y="72" fill="#ffa198" font-size="9.5">• Temp Keys = One-Time Watch</text>
+                        <text x="15" y="86" fill="#3fb950" font-size="9.5">• Masterkey = Restore Original</text>
+                      </svg>
+                    </div>
+                    <h4>2. Set Temporary or Masterkey</h4>
+                    <p>Select your video file, then type how many <b>Temporary Keys</b> you want (e.g. 500 or 1000) and/or check <b>Permanent Masterkey</b> to generate a permanent restore key.</p>
+                  </div>
+
+                  <div class="step-card">
+                    <span class="step-badge badge-red">STEP 3 • ENCRYPT LOCALLY</span>
+                    <div class="step-visual">
+                      <!-- Visual Picture: Output .vlock + bot_keys.txt -->
+                      <svg width="210" height="100" viewBox="0 0 210 100" fill="none">
+                        <rect x="18" y="18" width="80" height="64" rx="8" fill="#140507" stroke="#f85149" stroke-width="2"/>
+                        <text x="58" y="46" fill="#ff7b72" font-size="10" font-weight="bold" text-anchor="middle">Video.vlock</text>
+                        <text x="58" y="62" fill="#8b949e" font-size="8" text-anchor="middle">Encrypted File</text>
+                        <rect x="112" y="18" width="80" height="64" rx="8" fill="#0b2419" stroke="#3fb950" stroke-width="2"/>
+                        <text x="152" y="46" fill="#3fb950" font-size="10" font-weight="bold" text-anchor="middle">bot_keys.txt</text>
+                        <text x="152" y="62" fill="#8b949e" font-size="8" text-anchor="middle">Paste in Bot</text>
+                      </svg>
+                    </div>
+                    <h4>3. Save .vlock & bot_keys.txt</h4>
+                    <p>Tap <b>Encrypt Media & Generate Keys</b>. Your browser encrypts the video locally on your device (0 MB upload) and saves both <b>.vlock</b> and <b>bot_keys.txt</b>!</p>
+                  </div>
+                </div>
+
+                <!-- TAB 3: HOW TO GET A SESSION KEY (@Modrat_editor) -->
+                <div class="tutorial-grid" id="tutGridSession" style="display:none;">
+                  <div class="step-card">
+                    <span class="step-badge badge-blue">STEP 1 • CONTACT ADMIN</span>
+                    <div class="step-visual">
+                      <svg width="210" height="100" viewBox="0 0 210 100" fill="none">
+                        <circle cx="55" cy="50" r="28" fill="#1f6feb"/>
+                        <path d="M42 50 L65 40 L60 62 L52 54 Z" fill="#ffffff"/>
+                        <text x="135" y="44" fill="#ffffff" font-size="11" font-weight="bold" text-anchor="middle">@Modrat_editor</text>
+                        <rect x="92" y="54" width="86" height="22" rx="11" fill="#1f3a60"/>
+                        <text x="135" y="69" fill="#58a6ff" font-size="9.5" font-weight="bold" text-anchor="middle">Message on TG</text>
+                      </svg>
+                    </div>
+                    <h4>1. Contact @Modrat_editor on Telegram</h4>
+                    <p>To unlock the red <b>ADMIN • Encryption Panel</b>, message <a href="https://t.me/Modrat_editor" target="_blank" style="color:#58a6ff;font-weight:bold;">@Modrat_editor</a> on Telegram (or tap the <b>⋮</b> menu at the top right).</p>
+                  </div>
+
+                  <div class="step-card">
+                    <span class="step-badge badge-blue">STEP 2 • CHOOSE PLAN</span>
+                    <div class="step-visual">
+                      <svg width="210" height="100" viewBox="0 0 210 100" fill="none">
+                        <rect x="16" y="18" width="82" height="26" rx="5" fill="#161b22" stroke="#30363d"/>
+                        <text x="57" y="35" fill="#c9d1d9" font-size="9.5" font-weight="bold" text-anchor="middle">1 Day / 1 Week</text>
+                        <rect x="110" y="18" width="82" height="26" rx="5" fill="#161b22" stroke="#30363d"/>
+                        <text x="151" y="35" fill="#c9d1d9" font-size="9.5" font-weight="bold" text-anchor="middle">1 Month / 1 Year</text>
+                        <rect x="45" y="54" width="120" height="28" rx="6" fill="#143d29" stroke="#3fb950"/>
+                        <text x="105" y="72" fill="#3fb950" font-size="10" font-weight="bold" text-anchor="middle">★ Lifetime Access</text>
+                      </svg>
+                    </div>
+                    <h4>2. Choose Your Duration</h4>
+                    <p>Let <b>@Modrat_editor</b> know which encryption access duration you need: <b>1 Day</b>, <b>1 Week</b>, <b>1 Month</b>, <b>1 Year</b>, or <b>Lifetime</b>.</p>
+                  </div>
+
+                  <div class="step-card">
+                    <span class="step-badge badge-blue">STEP 3 • ACTIVATE KEY</span>
+                    <div class="step-visual">
+                      <svg width="210" height="100" viewBox="0 0 210 100" fill="none">
+                        <rect x="20" y="25" width="170" height="50" rx="8" fill="#260c10" stroke="#da3633" stroke-width="2"/>
+                        <text x="105" y="46" fill="#3fb950" font-size="10" font-weight="bold" text-anchor="middle">✓ Admin Panel Unlocked</text>
+                        <text x="105" y="63" fill="#ffdcd7" font-size="9" text-anchor="middle">Ready to Encrypt Videos</text>
+                      </svg>
+                    </div>
+                    <h4>3. Paste & Unlock</h4>
+                    <p>Paste the <b>VLKS-...</b> Session Key you receive into the red Admin Panel and click <b>Unlock</b>. You can now encrypt unlimited videos for that duration!</p>
                   </div>
                 </div>
               </div>
@@ -501,9 +890,6 @@ jobs:
             </div>
 
             <script>
-              // =========================================================================
-              // ZERO-KNOWLEDGE VAULT CONSTANTS (POPULATED AT BUILD TIME)
-              // =========================================================================
               const ZK_SALT_HEX = "__ZK_SALT_HEX__";
               const ZK_VERIFIER_HEX = "__ZK_VERIFIER_HEX__";
               const ZK_ENC_D_HEX = "__ZK_ENC_D_HEX__";
@@ -521,15 +907,11 @@ jobs:
               let verifiedSuPassword = "";
               let activeStreamSessions = {};
               let currentObjectUrl = null;
+              let deferredPwaPrompt = null;
 
-              // =========================================================================
-              // BYTE, HEX, BASE64URL, BASE32 & CRYPTO HELPERS
-              // =========================================================================
               function hexToBytes(hex) {
                 const out = new Uint8Array(hex.length / 2);
-                for (let i = 0; i < out.length; i++) {
-                  out[i] = parseInt(hex.substr(i * 2, 2), 16);
-                }
+                for (let i = 0; i < out.length; i++) out[i] = parseInt(hex.substr(i * 2, 2), 16);
                 return out;
               }
 
@@ -607,7 +989,60 @@ jobs:
               }
 
               // =========================================================================
-              // SERVICE WORKER REGISTRATION FOR 1GB+ ZERO-RAM RANGE STREAMING
+              // PWA FILE HANDLER: AUTO-LOAD .VLOCK WHEN DOUBLE-CLICKED ON OS
+              // =========================================================================
+              if ('launchQueue' in window) {
+                window.launchQueue.setConsumer(async (launchParams) => {
+                  if (!launchParams.files || launchParams.files.length === 0) return;
+                  try {
+                    const fileHandle = launchParams.files[0];
+                    const file = await fileHandle.getFile();
+                    onVlockFilePicked(file);
+                    document.getElementById('viewerKeyInput').focus();
+                  } catch (e) {}
+                });
+              }
+
+              window.addEventListener('beforeinstallprompt', (e) => {
+                e.preventDefault();
+                deferredPwaPrompt = e;
+              });
+
+              // =========================================================================
+              // WINDOWS 1-CLICK LOCKED ICON & AUTO-REDIRECT INSTALLER (.BAT GENERATOR)
+              // =========================================================================
+              function downloadWindowsIconRedirectSetup() {
+                const siteUrl = window.location.origin + window.location.pathname.replace(/index\.html$/i, '');
+                const icoUrl = siteUrl + (siteUrl.endsWith('/') ? '' : '/') + 'vlock_locked.ico';
+                const batLines = [
+                  '@echo off',
+                  'title VLock - Windows Locked Icon & Auto-Open Setup',
+                  'echo Setting up VLock Locked Video Icon and Website Redirect...',
+                  'set "VLOCK_DIR=%APPDATA%\\VLock"',
+                  'if not exist "%VLOCK_DIR%" mkdir "%VLOCK_DIR%"',
+                  `powershell -NoProfile -ExecutionPolicy Bypass -Command "Invoke-WebRequest -Uri '${icoUrl}' -OutFile '%VLOCK_DIR%\\vlock_locked.ico'"`,
+                  'reg add "HKCU\\Software\\Classes\\.vlock" /ve /d "VLock.EncryptedVideo" /f >nul',
+                  'reg add "HKCU\\Software\\Classes\\VLock.EncryptedVideo" /ve /d "VLock Locked Video File" /f >nul',
+                  'reg add "HKCU\\Software\\Classes\\VLock.EncryptedVideo\\DefaultIcon" /ve /d "\"%VLOCK_DIR%\\vlock_locked.ico\",0" /f >nul',
+                  `reg add "HKCU\\Software\\Classes\\VLock.EncryptedVideo\\shell\\open\\command" /ve /d "cmd /c start \\"\\" \\"${siteUrl}?open=1\\"" /f >nul`,
+                  'reg delete "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\FileExts\\.vlock\\UserChoice" /f >nul 2>&1',
+                  'ie4uinit.exe -show >nul 2>&1',
+                  'echo.',
+                  'echo SUCCESS! All .vlock files now display the Locked Video Icon and open VLock automatically!',
+                  'pause'
+                ];
+                const blob = new Blob([batLines.join('\r\n')], { type: 'application/bat' });
+                saveBlobToDisk(blob, 'VLock_Locked_Icon_Setup.bat');
+                alert(
+                  "Downloaded: VLock_Locked_Icon_Setup.bat\n\n" +
+                  "Double-click that file once on your Windows PC:\n" +
+                  "1. It replaces the Python icon on all .vlock files with the new Locked Video Icon.\n" +
+                  "2. Double-clicking any .vlock file will automatically open this VLock website!"
+                );
+              }
+
+              // =========================================================================
+              // SERVICE WORKER REGISTRATION
               // =========================================================================
               if ('serviceWorker' in navigator) {
                 navigator.serviceWorker.register('./sw.js').catch(() => {});
@@ -644,9 +1079,6 @@ jobs:
                 });
               }
 
-              // =========================================================================
-              // FILE PICKERS & DRAG-AND-DROP HANDLERS
-              // =========================================================================
               function onVlockFilePicked(file) {
                 if (!file) return;
                 selectedVlockFile = file;
@@ -682,9 +1114,6 @@ jobs:
                 });
               }
 
-              // =========================================================================
-              // CLIPBOARD PASTE & COPY HELPERS
-              // =========================================================================
               async function pasteIntoField(inputId) {
                 const el = document.getElementById(inputId);
                 el.focus();
@@ -712,9 +1141,6 @@ jobs:
                 }
               }
 
-              // =========================================================================
-              // SUPERUSER PANEL & SESSION KEY LOGIC (ZERO-KNOWLEDGE JWK ECDSA)
-              // =========================================================================
               async function handleSuperuserLogin() {
                 const pwd = document.getElementById('suPasswordInput').value;
                 if (!pwd) {
@@ -881,9 +1307,6 @@ jobs:
                 }
               }
 
-              // =========================================================================
-              // USER PANEL: DECRYPTION, STREAMING & PERMANENT MASTERKEY RESTORE
-              // =========================================================================
               function resolveMimeType(ext) {
                 const e = ext.toLowerCase();
                 const map = {
@@ -980,13 +1403,11 @@ jobs:
 
                   const cryptoKey = await crypto.subtle.importKey('raw', masterKey, 'AES-CTR', false, ['decrypt']);
 
-                  // IF PERMANENT MASTERKEY (slotStatus === 2): RESTORE ORIGINAL VIDEO FOREVER
                   if (slotStatus === 2) {
                     await restoreOriginalMediaLocally(selectedVlockFile, cryptoKey, nonce8, payloadOffset, payloadSize, ext);
                     return;
                   }
 
-                  // BURN ONE-TIME KEY IMMEDIATELY
                   burnedKeys[keyHex] = Date.now();
                   localStorage.setItem('vlock_burned_keys', JSON.stringify(burnedKeys));
 
@@ -1002,7 +1423,6 @@ jobs:
                     videoEl.src = `./__vlock_stream__/Episode${ext}?sid=${sid}&size=${payloadSize}&mime=${encodeURIComponent(mime)}`;
                     videoEl.play().catch(() => {});
                   } else {
-                    // Disk-backed Blob chunking so even 1GB+ files don't overflow JS heap
                     const blobParts = [];
                     const chunkSize = 8 * 1024 * 1024;
                     let offset = 0;
@@ -1082,9 +1502,6 @@ jobs:
                 setTimeout(() => URL.revokeObjectURL(url), 10000);
               }
 
-              // =========================================================================
-              // ADMIN PANEL: INSTANT KEY GENERATION + LOCAL 1GB+ ENCRYPTION
-              // =========================================================================
               function generateHumanKey(prefix) {
                 const alpha = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
                 const rnd = crypto.getRandomValues(new Uint8Array(12));
@@ -1174,13 +1591,11 @@ jobs:
                     }
                   }
 
-                  // DISPLAY & SAVE BOT_KEYS.TXT IMMEDIATELY
                   lastGeneratedKeysContent = keyLines.join('\n') + '\n';
                   document.getElementById('keysTextarea').value = lastGeneratedKeysContent;
                   document.getElementById('keysOutputBox').classList.add('show');
                   await saveBlobToDisk(new Blob([lastGeneratedKeysContent], { type: 'text/plain;charset=utf-8' }), 'bot_keys.txt');
 
-                  // ENCRYPT VIDEO LOCALLY IN 8MB DISK-BACKED CHUNKS (0 MB INTERNET UPLOAD)
                   const headerFixed = new Uint8Array(66);
                   headerFixed.set(enc.encode("VLCK"), 0);
                   const hDv = new DataView(headerFixed.buffer);
@@ -1223,13 +1638,69 @@ jobs:
               }
 
               // =========================================================================
-              // ATTACH ALL BUTTON LISTENERS ON LOAD
+              // TUTORIAL TAB SWITCHING & BUTTON LISTENERS
               // =========================================================================
+              function switchTutorialTab(mode) {
+                const bUser = document.getElementById('tabBtnUser');
+                const bAdmin = document.getElementById('tabBtnAdmin');
+                const bSess = document.getElementById('tabBtnSession');
+                const gUser = document.getElementById('tutGridUser');
+                const gAdmin = document.getElementById('tutGridAdmin');
+                const gSess = document.getElementById('tutGridSession');
+
+                bUser.className = 'tab-btn';
+                bAdmin.className = 'tab-btn';
+                bSess.className = 'tab-btn';
+                gUser.style.display = 'none';
+                gAdmin.style.display = 'none';
+                gSess.style.display = 'none';
+
+                if (mode === 'user') {
+                  bUser.classList.add('active-green');
+                  gUser.style.display = 'grid';
+                } else if (mode === 'admin') {
+                  bAdmin.classList.add('active-red');
+                  gAdmin.style.display = 'grid';
+                } else {
+                  bSess.classList.add('active-blue');
+                  gSess.style.display = 'grid';
+                }
+              }
+
               document.addEventListener('DOMContentLoaded', () => {
                 refreshAdminLockUI();
 
                 bindDropZone('viewerDropZone', 'vlockFileInput', onVlockFilePicked);
                 bindDropZone('encryptDropZone', 'rawMediaInput', onRawMediaPicked);
+
+                document.getElementById('tabBtnUser').addEventListener('click', () => switchTutorialTab('user'));
+                document.getElementById('tabBtnAdmin').addEventListener('click', () => switchTutorialTab('admin'));
+                document.getElementById('tabBtnSession').addEventListener('click', () => switchTutorialTab('session'));
+
+                const scrollToTut = () => {
+                  document.getElementById('tutorialSection').scrollIntoView({ behavior: 'smooth' });
+                };
+                document.getElementById('btnScrollTutorial').addEventListener('click', scrollToTut);
+                document.getElementById('menuTutorial').addEventListener('click', () => {
+                  switchTutorialTab('session');
+                  scrollToTut();
+                });
+
+                document.getElementById('btnInstallPwa').addEventListener('click', async () => {
+                  if (deferredPwaPrompt) {
+                    deferredPwaPrompt.prompt();
+                    await deferredPwaPrompt.userChoice;
+                    deferredPwaPrompt = null;
+                  } else {
+                    alert(
+                      "To enable automatic .vlock opening & Locked App Icon:\n\n" +
+                      "• On Android (Chrome): Tap the browser's 3-dot menu (⋮) -> 'Add to Home screen' / 'Install app'.\n" +
+                      "• On Windows (Chrome/Edge): Click the 'Install VLock' icon on the right side of the address bar (or click the Windows .bat button next to this button)."
+                    );
+                  }
+                });
+
+                document.getElementById('btnDownloadWinHelper').addEventListener('click', downloadWindowsIconRedirectSetup);
 
                 document.getElementById('btnFullScreen').addEventListener('click', () => {
                   if (document.documentElement.requestFullscreen) document.documentElement.requestFullscreen();
@@ -1261,7 +1732,7 @@ jobs:
                 document.getElementById('menuCopyright').addEventListener('click', () => {
                   document.getElementById('infoModalTitle').textContent = "Copyright & Legal Notice";
                   document.getElementById('infoModalBody').textContent =
-                    "VLock Media Security Suite v2.3\n© 2026 VLock Studio. All Rights Reserved.\n\n" +
+                    "VLock Media Security Suite v2.4\n© 2026 VLock Studio. All Rights Reserved.\n\n" +
                     "This software and its cryptographic stream architecture are protected by copyright law and international treaties. " +
                     "Unauthorized reproduction, reverse engineering, or tampering may result in severe civil and criminal penalties.\n\n" +
                     "For any issue contact @Modrat_editor using Telegram.";
