@@ -673,20 +673,12 @@ jobs:
               await saveBlobToUserDisk(new Blob(outParts, { type: 'application/octet-stream' }), `${stem}.vlock`);
               await saveBlobToUserDisk(new Blob([lastGeneratedKeysContent], { type: 'text/plain;charset=utf-8' }), `bot_keys.txt`);
 
-              document.getElementById('btnCopyBotKeys').style.display = 'inline-flex';
               statusEl.textContent = `Done! Saved ${stem}.vlock & bot_keys.txt`;
             } catch (e) {
               alert("Encryption error: " + e.message);
               statusEl.textContent = "Error: " + e.message;
             } finally {
               btn.disabled = false;
-            }
-          };
-
-          window.copyGeneratedBotKeys = () => {
-            if (lastGeneratedKeysContent) {
-              navigator.clipboard.writeText(lastGeneratedKeysContent);
-              alert("All generated keys copied to clipboard!");
             }
           };
           '''
@@ -771,10 +763,10 @@ jobs:
                 <button class="btn btn-dark" onclick="exitFullScreen()">❐ Free Screen</button>
                 <button class="btn btn-dots" onclick="toggleDotsMenu(event)">⋮</button>
                 <div class="dropdown-menu" id="dotsMenu">
-         <button class="dropdown-item" onclick="document.getElementById('dotsMenu').classList.remove('show'); openSuperuserModal();">Superuser Panel</button>
-         <button class="dropdown-item" onclick="document.getElementById('dotsMenu').classList.remove('show'); openSupportModal();">For any issue contact @Modrat_editor using Telegram</button>
-         <button class="dropdown-item" onclick="document.getElementById('dotsMenu').classList.remove('show'); openCopyrightModal();">Copyright & Legal Notice</button>
-         </div>
+                  <button class="dropdown-item" onclick="openSuperuserModal()">Superuser Panel</button>
+                  <button class="dropdown-item" onclick="openSupportModal()">For any issue contact @Modrat_editor using Telegram</button>
+                  <button class="dropdown-item" onclick="openCopyrightModal()">Copyright & Legal Notice</button>
+                </div>
               </div>
             </div>
             <div class="container">
