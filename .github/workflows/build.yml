@@ -26,93 +26,21 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Generate VLock Icon & Website
+      - name: Generate VLock Website
         env:
           SUPERUSER_PASSWORD: ${{ secrets.SUPERUSER_PASSWORD }}
         run: |
-          pip install cryptography>=42.0.0 pillow>=10.0.0
+          pip install cryptography>=42.0.0
           mkdir -p dist_web
 
           python3 - << 'PYEOF'
           import os, base64, hashlib
-          from PIL import Image, ImageDraw
           from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
           from cryptography.hazmat.primitives.asymmetric import ec
           from cryptography.hazmat.backends import default_backend
 
           # =====================================================================
-          # 1. GENERATE SITE FAVICON & BRAND ICON (.PNG)
-          # =====================================================================
-          def create_locked_video_icon(size=192):
-              img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-              draw = ImageDraw.Draw(img)
-              s = size / 512.0
-
-              # Outer dark obsidian file card with emerald & crimson security border
-              draw.rounded_rectangle(
-                  [int(24*s), int(16*s), int(488*s), int(496*s)],
-                  radius=int(72*s),
-                  fill=(13, 17, 23, 255),
-                  outline=(46, 160, 67, 255),
-                  width=max(2, int(14*s))
-              )
-
-              # Inner glowing vault ring
-              draw.rounded_rectangle(
-                  [int(48*s), int(40*s), int(464*s), int(472*s)],
-                  radius=int(52*s),
-                  fill=(18, 26, 36, 255),
-                  outline=(218, 54, 51, 200),
-                  width=max(1, int(6*s))
-              )
-
-              # Padlock Shackle (Top U-Loop)
-              draw.arc(
-                  [int(176*s), int(76*s), int(336*s), int(246*s)],
-                  start=180, end=360,
-                  fill=(63, 185, 80, 255),
-                  width=max(3, int(28*s))
-              )
-              draw.line([int(190*s), int(160*s), int(190*s), int(215*s)], fill=(63, 185, 80, 255), width=max(3, int(28*s)))
-              draw.line([int(322*s), int(160*s), int(322*s), int(215*s)], fill=(63, 185, 80, 255), width=max(3, int(28*s)))
-
-              # Padlock Body (Center Shield)
-              draw.rounded_rectangle(
-                  [int(136*s), int(204*s), int(376*s), int(416*s)],
-                  radius=int(36*s),
-                  fill=(20, 61, 41, 255),
-                  outline=(63, 185, 80, 255),
-                  width=max(2, int(12*s))
-              )
-
-              # Video Play Triangle inside Padlock Body
-              play_pts = [
-                  (int(224*s), int(258*s)),
-                  (int(224*s), int(362*s)),
-                  (int(314*s), int(310*s))
-              ]
-              draw.polygon(play_pts, fill=(255, 255, 255, 255))
-
-              # Film sprocket accents on left & right sides
-              for y_off in (110, 190, 270, 350):
-                  draw.rounded_rectangle(
-                      [int(68*s), int(y_off*s), int(96*s), int((y_off+42)*s)],
-                      radius=int(6*s),
-                      fill=(48, 54, 61, 255)
-                  )
-                  draw.rounded_rectangle(
-                      [int(416*s), int(y_off*s), int(444*s), int((y_off+42)*s)],
-                      radius=int(6*s),
-                      fill=(48, 54, 61, 255)
-                  )
-
-              return img
-
-          icon192 = create_locked_video_icon(192)
-          icon192.save("dist_web/icon-192.png", format="PNG")
-
-          # =====================================================================
-          # 2. ZERO-KNOWLEDGE VAULT GENERATION (FROM GITHUB SECRET)
+          # 1. ZERO-KNOWLEDGE VAULT GENERATION (FROM GITHUB SECRET)
           # =====================================================================
           secret_pwd = os.environ.get("SUPERUSER_PASSWORD", "").strip()
           if secret_pwd:
@@ -145,7 +73,7 @@ jobs:
           enc_d_hex = (enc.update(d_raw32) + enc.finalize()).hex()
 
           # =====================================================================
-          # 3. SERVICE WORKER (LOCAL 64-BIT VIDEO STREAMING ONLY)
+          # 2. SERVICE WORKER (LOCAL 64-BIT VIDEO STREAMING ONLY)
           # =====================================================================
           sw_js = r'''self.addEventListener('install', (event) => {
             self.skipWaiting();
@@ -216,7 +144,7 @@ jobs:
               f.write(sw_js)
 
           # =====================================================================
-          # 4. MAIN WEBSITE (INDEX.HTML WITHOUT WEB APP / PWA INSTALL FEATURES)
+          # 3. MAIN WEBSITE (INDEX.HTML)
           # =====================================================================
           index_html = r'''<!DOCTYPE html>
           <html lang="en">
@@ -225,7 +153,6 @@ jobs:
             <meta name="viewport" content="width=device-width, initial-scale=1.0" />
             <meta name="theme-color" content="#161b22" />
             <title>VLock — User Decryption & Admin Encryption</title>
-            <link rel="icon" type="image/png" href="./icon-192.png" />
             <style>
               :root {
                 --bg-dark: #0d1117;
@@ -248,7 +175,6 @@ jobs:
                 flex-wrap: wrap; gap: 10px;
               }
               .brand { display: flex; align-items: center; gap: 10px; }
-              .brand img { width: 32px; height: 32px; border-radius: 7px; }
               .brand h1 { font-size: 19px; font-weight: 800; color: #ffffff; }
               .brand span { font-size: 12px; color: #8b949e; display: none; }
               @media (min-width: 640px) { .brand span { display: inline; } }
@@ -426,7 +352,6 @@ jobs:
             <!-- TOP BAR -->
             <div class="topbar">
               <div class="brand">
-                <img src="./icon-192.png" alt="VLock Icon" />
                 <h1>VLock</h1>
                 <span>User Decryption & Admin Encryption</span>
               </div>
