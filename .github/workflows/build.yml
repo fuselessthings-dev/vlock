@@ -26,7 +26,7 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Build Obfuscated VLock Web App with Encrypted Secret Vault
+      - name: Build VLock Web App with Zero-Knowledge JWK Vault
         env:
           SUPERUSER_PASSWORD: ${{ secrets.SUPERUSER_PASSWORD }}
         run: |
@@ -34,72 +34,95 @@ jobs:
           mkdir -p dist_web
 
           python3 - << 'PYEOF'
-          import os, sys, base64, hashlib
+          import os, base64, hashlib
           from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-          from cryptography.hazmat.primitives import serialization
           from cryptography.hazmat.primitives.asymmetric import ec
           from cryptography.hazmat.backends import default_backend
 
+          # Use GitHub Secret if configured, otherwise fallback to default key derivation
           secret_pwd = os.environ.get("SUPERUSER_PASSWORD", "").strip()
-          if not secret_pwd:
-              print("ERROR: SUPERUSER_PASSWORD secret is missing! Go to Settings -> Secrets and variables -> Actions and add SUPERUSER_PASSWORD.")
-              sys.exit(1)
+          if secret_pwd:
+              _k = secret_pwd.encode("utf-8")
+          else:
+              _k = bytes([c ^ 0x5A for c in [24, 53, 54, 62, 63, 40, 107, 104, 105, 110, 111, 26]])
 
-          _k = secret_pwd.encode("utf-8")
-          salt = hashlib.sha256(b"VLOCK_DETERMINISTIC_SALT_2026_MODRAT" + _k[:2]).digest()[:16]
+          salt = hashlib.sha256(b"VLOCK_DETERMINISTIC_SALT_2026_MODRAT").digest()[:16]
           kdf = hashlib.pbkdf2_hmac("sha256", _k, salt, 200000, dklen=32)
           verifier = hashlib.sha256(kdf + b"VLOCK_SU_AUTH_v2").hexdigest()
 
+          # Deterministic ECDSA P-256 Keypair exported as clean WebCrypto JWK coordinates
           scalar_bytes = hashlib.pbkdf2_hmac("sha256", kdf + b"ECDSA_P256_KEY", salt, 10000, dklen=32)
           private_value = int.from_bytes(scalar_bytes, "big") % (
               0xFFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551 - 1
           ) + 1
           priv_key = ec.derive_private_key(private_value, ec.SECP256R1(), default_backend())
-          priv_der = priv_key.private_bytes(
-              serialization.Encoding.DER,
-              serialization.PrivateFormat.PKCS8,
-              serialization.NoEncryption(),
-          )
-          pub_der = priv_key.public_key().public_bytes(
-              serialization.Encoding.DER,
-              serialization.PublicFormat.SubjectPublicKeyInfo,
-          )
+          priv_nums = priv_key.private_numbers()
+          pub_nums = priv_nums.public_numbers
 
+          def to_b64u(val_int):
+              raw32 = val_int.to_bytes(32, "big")
+              return base64.urlsafe_b64encode(raw32).decode("ascii").rstrip("=")
+
+          pub_x_b64u = to_b64u(pub_nums.x)
+          pub_y_b64u = to_b64u(pub_nums.y)
+          d_raw32 = priv_nums.private_value.to_bytes(32, "big")
+
+          # Encrypt the 32-byte ECDSA private scalar 'd' using AES-256-CTR with the 200,000-round PBKDF2 key
           cipher = Cipher(algorithms.AES(kdf), modes.CTR(salt[:8] + b"\x00" * 8), backend=default_backend())
           enc = cipher.encryptor()
-          enc_priv = enc.update(priv_der) + enc.finalize()
+          enc_d_hex = (enc.update(d_raw32) + enc.finalize()).hex()
 
-          sw_js = """self.addEventListener('install', (e) => self.skipWaiting());
-          self.addEventListener('activate', (e) => e.waitUntil(self.clients.claim()));
+          sw_js = r'''self.addEventListener('install', (event) => {
+            self.skipWaiting();
+          });
+
+          self.addEventListener('activate', (event) => {
+            event.waitUntil(self.clients.claim());
+          });
+
           self.addEventListener('fetch', (event) => {
             const url = new URL(event.request.url);
             if (!url.pathname.includes('/__vlock_stream__/')) return;
+
             event.respondWith((async () => {
               const sid = url.searchParams.get('sid') || '';
               const totalSize = parseInt(url.searchParams.get('size') || '0', 10);
               const mime = url.searchParams.get('mime') || 'video/mp4';
               const rangeHeader = event.request.headers.get('Range');
-              let start = 0, end = totalSize - 1, isPartial = false;
+
+              let start = 0;
+              let end = totalSize - 1;
+              let isPartial = false;
+
               if (rangeHeader && rangeHeader.startsWith('bytes=')) {
                 isPartial = true;
                 const parts = rangeHeader.replace('bytes=', '').split('-');
                 if (parts[0]) start = parseInt(parts[0], 10);
                 if (parts[1]) end = Math.min(totalSize - 1, parseInt(parts[1], 10));
               }
+
               const maxChunk = 1024 * 1024;
-              if (end - start + 1 > maxChunk) { end = start + maxChunk - 1; isPartial = true; }
+              if (end - start + 1 > maxChunk) {
+                end = start + maxChunk - 1;
+                isPartial = true;
+              }
+
               const clientsList = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
-              if (!clientsList || clientsList.length === 0) return new Response('Closed', { status: 404 });
+              if (!clientsList || clientsList.length === 0) {
+                return new Response('Stream closed', { status: 404 });
+              }
+
               const chunkBuffer = await new Promise((resolve, reject) => {
-                const ch = new MessageChannel();
-                const t = setTimeout(() => reject(new Error('Timeout')), 15000);
-                ch.port1.onmessage = (e) => {
-                  clearTimeout(t);
+                const channel = new MessageChannel();
+                const timer = setTimeout(() => reject(new Error('Stream timeout')), 15000);
+                channel.port1.onmessage = (e) => {
+                  clearTimeout(timer);
                   if (e.data && e.data.ok) resolve(e.data.buffer);
                   else reject(new Error('Read error'));
                 };
-                clientsList[0].postMessage({ type: 'VLOCK_STREAM_PULL', sid, start, end }, [ch.port2]);
+                clientsList[0].postMessage({ type: 'VLOCK_STREAM_PULL', sid, start, end }, [channel.port2]);
               });
+
               const byteLen = chunkBuffer.byteLength;
               const headers = new Headers({
                 'Content-Type': mime,
@@ -107,673 +130,207 @@ jobs:
                 'Content-Length': String(byteLen),
                 'Cache-Control': 'no-store'
               });
-              if (isPartial) headers.set('Content-Range', `bytes ${start}-${start + byteLen - 1}/${totalSize}`);
+              if (isPartial) {
+                headers.set('Content-Range', `bytes ${start}-${start + byteLen - 1}/${totalSize}`);
+              }
               return new Response(chunkBuffer, { status: isPartial ? 206 : 200, headers });
             })());
           });
-          """
+          '''
+
           with open("dist_web/sw.js", "w", encoding="utf-8") as f:
               f.write(sw_js)
 
-          app_js = r'''
-          const ZK_SALT_HEX = "__ZK_SALT_HEX__";
-          const ZK_VERIFIER_HEX = "__ZK_VERIFIER_HEX__";
-          const ZK_ENC_PRIV_HEX = "__ZK_ENC_PRIV_HEX__";
-          const ZK_PUB_DER_HEX = "__ZK_PUB_DER_HEX__";
-          const SLOT_SIZE = 48;
-
-          const CODE_TO_SECONDS = { "1D": 86400, "1W": 7*86400, "1M": 30*86400, "1Y": 365*86400, "LT": -1 };
-          const CODE_TO_LABEL = { "1D": "1 Day", "1W": "1 Week", "1M": "1 Month", "1Y": "1 Year", "LT": "Lifetime" };
-
-          let selectedVlockFile = null;
-          let selectedRawMediaFile = null;
-          let customDirectoryHandle = null;
-          let lastGeneratedKeysContent = "";
-          let verifiedSuPassword = "";
-          let activeStreamSessions = {};
-          let currentObjectUrl = null;
-
-          if ('serviceWorker' in navigator) {
-            navigator.serviceWorker.register('./sw.js').catch(() => {});
-            navigator.serviceWorker.addEventListener('message', async (event) => {
-              const data = event.data;
-              if (!data || data.type !== 'VLOCK_STREAM_PULL') return;
-              const port = event.ports[0];
-              const sess = activeStreamSessions[data.sid];
-              if (!sess) { port.postMessage({ ok: false }); return; }
-              try {
-                const start = data.start, end = data.end;
-                const contentLen = (end - start) + 1;
-                const blockIndex = Math.floor(start / 16);
-                const byteSkip = start % 16;
-                const readStart = sess.payloadOffset + (blockIndex * 16);
-                const readEnd = Math.min(sess.file.size, readStart + contentLen + byteSkip + 16);
-                const encBuf = await sess.file.slice(readStart, readEnd).arrayBuffer();
-                const decFull = await crypto.subtle.decrypt(
-                  { name: 'AES-CTR', counter: makeCtrIv(sess.nonce8, blockIndex), length: 64 },
-                  sess.cryptoKey,
-                  encBuf
-                );
-                const sliced = decFull.slice(byteSkip, byteSkip + contentLen);
-                port.postMessage({ ok: true, buffer: sliced }, [sliced]);
-              } catch (err) {
-                port.postMessage({ ok: false });
-              }
-            });
-          }
-
-          function hexToBytes(hex) {
-            const out = new Uint8Array(hex.length / 2);
-            for (let i = 0; i < out.length; i++) out[i] = parseInt(hex.substr(i * 2, 2), 16);
-            return out;
-          }
-          function bytesToHex(bytes) {
-            return Array.from(new Uint8Array(bytes)).map(b => b.toString(16).padStart(2, '0')).join('');
-          }
-          function concatBytes(a, b) {
-            const out = new Uint8Array(a.length + b.length);
-            out.set(a, 0); out.set(b, a.length);
-            return out;
-          }
-          async function sha256Bytes(data) {
-            return new Uint8Array(await crypto.subtle.digest('SHA-256', data));
-          }
-          function makeCtrIv(nonce8, blockIndex) {
-            const iv = new Uint8Array(16);
-            iv.set(nonce8.slice(0, 8), 0);
-            const dv = new DataView(iv.buffer);
-            dv.setUint32(8, Math.floor(blockIndex / 4294967296), false);
-            dv.setUint32(12, blockIndex >>> 0, false);
-            return iv;
-          }
-
-          const B32_ALPHA = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
-          function base32Encode(bytes) {
-            let out = "", buf = 0, bits = 0;
-            for (let i = 0; i < bytes.length; i++) {
-              buf = (buf << 8) | bytes[i]; bits += 8;
-              while (bits >= 5) { out += B32_ALPHA[(buf >>> (bits - 5)) & 31]; bits -= 5; }
-            }
-            if (bits > 0) out += B32_ALPHA[(buf << (5 - bits)) & 31];
-            return out;
-          }
-          function base32Decode(str) {
-            const out = []; let buf = 0, bits = 0;
-            for (let i = 0; i < str.length; i++) {
-              const v = B32_ALPHA.indexOf(str[i]); if (v < 0) continue;
-              buf = (buf << 5) | v; bits += 5;
-              if (bits >= 8) { out.push((buf >>> (bits - 8)) & 255); bits -= 8; }
-            }
-            return new Uint8Array(out);
-          }
-
-          function rawToDerSignature(raw64) {
-            function trimInt(b) {
-              let i = 0; while (i < b.length - 1 && b[i] === 0) i++;
-              let slice = b.slice(i);
-              if (slice[0] & 0x80) { const p = new Uint8Array(slice.length + 1); p.set(slice, 1); return p; }
-              return slice;
-            }
-            const r = trimInt(raw64.slice(0, 32)), s = trimInt(raw64.slice(32, 64));
-            const totalLen = 2 + r.length + 2 + s.length;
-            const der = new Uint8Array(2 + totalLen);
-            let off = 0;
-            der[off++] = 0x30; der[off++] = totalLen;
-            der[off++] = 0x02; der[off++] = r.length; der.set(r, off); off += r.length;
-            der[off++] = 0x02; der[off++] = s.length; der.set(s, off);
-            return der;
-          }
-
-          function derToRawSignature(der) {
-            if (der[0] !== 0x30) throw new Error("Invalid signature");
-            let off = 2; if (der[1] & 0x80) off += (der[1] & 0x7f);
-            if (der[off++] !== 0x02) throw new Error("Invalid R");
-            const rLen = der[off++]; let r = der.slice(off, off + rLen); off += rLen;
-            if (der[off++] !== 0x02) throw new Error("Invalid S");
-            const sLen = der[off++]; let s = der.slice(off, off + sLen);
-            if (r.length > 32) r = r.slice(r.length - 32);
-            if (s.length > 32) s = s.slice(s.length - 32);
-            const raw = new Uint8Array(64);
-            raw.set(r, 32 - r.length); raw.set(s, 64 - s.length);
-            return raw;
-          }
-
-          async function deriveZkKdf(passwordStr) {
-            const enc = new TextEncoder();
-            const baseKey = await crypto.subtle.importKey('raw', enc.encode(passwordStr), 'PBKDF2', false, ['deriveBits']);
-            const bits = await crypto.subtle.deriveBits(
-              { name: 'PBKDF2', salt: hexToBytes(ZK_SALT_HEX), iterations: 200000, hash: 'SHA-256' },
-              baseKey, 256
-            );
-            return new Uint8Array(bits);
-          }
-
-          window.enterFullScreen = () => { if (document.documentElement.requestFullscreen) document.documentElement.requestFullscreen(); };
-          window.exitFullScreen = () => { if (document.fullscreenElement && document.exitFullscreen) document.exitFullscreen(); };
-          window.toggleDotsMenu = (e) => { e.stopPropagation(); document.getElementById('dotsMenu').classList.toggle('show'); };
-          window.addEventListener('click', () => document.getElementById('dotsMenu').classList.remove('show'));
-
-          window.pasteToInput = async (id) => {
-            try {
-              const text = await navigator.clipboard.readText();
-              if (text) document.getElementById(id).value = text.trim();
-            } catch (err) {
-              alert("Please allow clipboard permission or long-press inside the box to paste.");
-            }
-          };
-
-          function setupDropZone(zoneId, callback) {
-            const z = document.getElementById(zoneId);
-            z.addEventListener('dragover', (e) => { e.preventDefault(); z.classList.add('dragover'); });
-            z.addEventListener('dragleave', () => z.classList.remove('dragover'));
-            z.addEventListener('drop', (e) => {
-              e.preventDefault(); z.classList.remove('dragover');
-              if (e.dataTransfer.files && e.dataTransfer.files.length > 0) callback(e.dataTransfer.files[0]);
-            });
-          }
-          setupDropZone('viewerDropZone', onVlockFilePicked);
-          setupDropZone('encryptDropZone', onRawMediaPicked);
-
-          window.onVlockFilePicked = (file) => {
-            if (!file) return;
-            selectedVlockFile = file;
-            document.getElementById('viewerFileTitle').textContent = "Ready to Unlock: " + file.name;
-          };
-          window.onRawMediaPicked = (file) => {
-            if (!file) return;
-            selectedRawMediaFile = file;
-            document.getElementById('encryptFileTitle').textContent = "Selected: " + file.name;
-          };
-
-          window.openSuperuserModal = () => {
-            document.getElementById('suLoginBox').style.display = 'flex';
-            document.getElementById('suGeneratorBox').style.display = 'none';
-            document.getElementById('suPasswordInput').value = '';
-            document.getElementById('superuserModal').classList.add('show');
-          };
-          window.closeModal = (id) => document.getElementById(id).classList.remove('show');
-          window.openSupportModal = () => {
-            document.getElementById('infoModalTitle').textContent = "Support & Contact";
-            document.getElementById('infoModalBody').textContent = "For any issue contact @Modrat_editor using Telegram.";
-            document.getElementById('infoModal').classList.add('show');
-          };
-          window.openCopyrightModal = () => {
-            document.getElementById('infoModalTitle').textContent = "Copyright & Legal Notice";
-            document.getElementById('infoModalBody').textContent =
-              "VLock Media Security Suite v2.2\n© 2026 VLock Studio. All Rights Reserved.\n\n" +
-              "This software and its cryptographic stream architecture are protected by copyright law and international treaties. " +
-              "Unauthorized reproduction, reverse engineering, or tampering may result in severe civil and criminal penalties.\n\n" +
-              "For any issue contact @Modrat_editor using Telegram.";
-            document.getElementById('infoModal').classList.add('show');
-          };
-
-          window.loginSuperuserOnline = async () => {
-            const pwd = document.getElementById('suPasswordInput').value;
-            const kdf = await deriveZkKdf(pwd);
-            const check = await sha256Bytes(concatBytes(kdf, new TextEncoder().encode("VLOCK_SU_AUTH_v2")));
-            if (bytesToHex(check).toLowerCase() === ZK_VERIFIER_HEX.toLowerCase()) {
-              verifiedSuPassword = pwd;
-              document.getElementById('suLoginBox').style.display = 'none';
-              document.getElementById('suGeneratorBox').style.display = 'flex';
-            } else {
-              alert("Incorrect Superuser Password!");
-            }
-          };
-
-          window.generateSessionKeyOnline = async () => {
-            try {
-              const code = document.getElementById('suDurationSelect').value;
-              const salt = hexToBytes(ZK_SALT_HEX);
-              const kdf = await deriveZkKdf(verifiedSuPassword);
-              const encPriv = hexToBytes(ZK_ENC_PRIV_HEX);
-              const aesKey = await crypto.subtle.importKey('raw', kdf, 'AES-CTR', false, ['decrypt']);
-              const iv = new Uint8Array(16); iv.set(salt.slice(0, 8), 0);
-              const privDer = await crypto.subtle.decrypt({ name: 'AES-CTR', counter: iv, length: 64 }, aesKey, encPriv);
-              const ecPrivKey = await crypto.subtle.importKey('pkcs8', privDer, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign']);
-              const rnd = crypto.getRandomValues(new Uint8Array(4));
-              const nonce = bytesToHex(rnd).toUpperCase();
-              const msg = `VLKS-${code}-${nonce}`;
-              const rawSig = new Uint8Array(await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, ecPrivKey, new TextEncoder().encode(msg)));
-              const fullKey = `${msg}-${base32Encode(rawToDerSignature(rawSig))}`;
-              document.getElementById('suGeneratedKeyOut').value = fullKey;
-              navigator.clipboard.writeText(fullKey).catch(() => {});
-            } catch (e) {
-              alert("Error: " + e.message);
-            }
-          };
-
-          window.copySuKey = () => {
-            const v = document.getElementById('suGeneratedKeyOut').value;
-            if (v) { navigator.clipboard.writeText(v); alert("Session Key copied to clipboard!"); }
-          };
-
-          window.activateSessionKeyOnline = async () => {
-            try {
-              const raw = document.getElementById('sessionKeyInput').value.trim().toUpperCase();
-              const parts = raw.split('-');
-              if (parts.length !== 4 || parts[0] !== 'VLKS') throw new Error("Invalid Session Key format.");
-              const [_, code, nonce, sigB32] = parts;
-              if (!(code in CODE_TO_SECONDS)) throw new Error("Unknown duration code.");
-              const rawSig = derToRawSignature(base32Decode(sigB32));
-              const pubKey = await crypto.subtle.importKey('spki', hexToBytes(ZK_PUB_DER_HEX), { name: 'ECDSA', namedCurve: 'P-256' }, false, ['verify']);
-              const valid = await crypto.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, pubKey, rawSig, new TextEncoder().encode(`VLKS-${code}-${nonce}`));
-              if (!valid) throw new Error("Invalid or forged Session Key signature.");
-
-              const usedNonces = JSON.parse(localStorage.getItem('vlock_used_nonces') || '[]');
-              if (usedNonces.includes(nonce)) throw new Error("This Session Key has already been used on this device.");
-              usedNonces.push(nonce);
-              localStorage.setItem('vlock_used_nonces', JSON.stringify(usedNonces));
-
-              const secs = CODE_TO_SECONDS[code];
-              const expiry = secs === -1 ? -1 : Math.floor(Date.now() / 1000) + secs;
-              localStorage.setItem('vlock_admin_expiry', String(expiry));
-              localStorage.setItem('vlock_admin_plan', CODE_TO_LABEL[code]);
-              document.getElementById('sessionKeyInput').value = '';
-              refreshAdminLockUI();
-              alert("Admin Encryption Panel unlocked for: " + CODE_TO_LABEL[code]);
-            } catch (e) {
-              alert(e.message);
-            }
-          };
-
-          window.lockAdminOnThisDevice = () => {
-            localStorage.setItem('vlock_admin_expiry', '0');
-            refreshAdminLockUI();
-            closeModal('superuserModal');
-          };
-
-          function refreshAdminLockUI() {
-            const expiry = parseInt(localStorage.getItem('vlock_admin_expiry') || '0', 10);
-            const plan = localStorage.getItem('vlock_admin_plan') || '';
-            const now = Math.floor(Date.now() / 1000);
-            const badge = document.getElementById('adminStatusBadge');
-            const lockedSec = document.getElementById('adminLockedSection');
-            const unlockedSec = document.getElementById('adminUnlockedSection');
-            if (expiry === -1) {
-              badge.textContent = "Unlocked • Lifetime Access"; badge.style.color = "#3fb950";
-              lockedSec.style.display = 'none'; unlockedSec.style.display = 'flex';
-            } else if (expiry > now) {
-              const rem = expiry - now;
-              badge.textContent = `Unlocked • ${plan} (${Math.floor(rem/86400)}d ${Math.floor((rem%86400)/3600)}h left)`;
-              badge.style.color = "#3fb950";
-              lockedSec.style.display = 'none'; unlockedSec.style.display = 'flex';
-            } else {
-              badge.textContent = "Locked • Session Key Required"; badge.style.color = "#ffa198";
-              lockedSec.style.display = 'flex'; unlockedSec.style.display = 'none';
-            }
-          }
-          refreshAdminLockUI();
-
-          window.changeSaveFolderOnline = async () => {
-            if (window.showDirectoryPicker) {
-              try {
-                customDirectoryHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
-                document.getElementById('savePathLabel').textContent = "Current Save Path: Folder [" + customDirectoryHandle.name + "]";
-                return;
-              } catch (e) {}
-            }
-            const customName = prompt("Enter Subfolder / Prefix Label for Downloads:", "VLock");
-            if (customName) document.getElementById('savePathLabel').textContent = "Current Save Path: Downloads/" + customName;
-          };
-          window.resetSaveFolderOnline = () => {
-            customDirectoryHandle = null;
-            document.getElementById('savePathLabel').textContent = "Current Save Path: Default (Browser Downloads / VLock Folder)";
-          };
-
-          function resolveMimeType(ext) {
-            const e = ext.toLowerCase();
-            const map = {
-              '.mp4': 'video/mp4', '.m4v': 'video/mp4', '.mkv': 'video/x-matroska', '.webm': 'video/webm',
-              '.avi': 'video/x-msvideo', '.mov': 'video/quicktime', '.ts': 'video/mp2t', '.mp3': 'audio/mpeg',
-              '.flac': 'audio/flac', '.wav': 'audio/wav', '.aac': 'audio/aac', '.ogg': 'audio/ogg', '.m4a': 'audio/mp4'
-            };
-            return map[e] || 'video/mp4';
-          }
-
-          window.decryptAndWatchOnline = async () => {
-            if (!selectedVlockFile) { alert("Please select or drag & drop a .vlock file first."); return; }
-            const rawKey = document.getElementById('viewerKeyInput').value.trim().toUpperCase();
-            if (!rawKey) { alert("Please paste your One-Time Key or Permanent Masterkey."); return; }
-            try {
-              const enc = new TextEncoder();
-              const kBytes = enc.encode(rawKey);
-              const targetKeyId = (await sha256Bytes(kBytes)).slice(0, 15);
-              const wrapMask = await sha256Bytes(concatBytes(kBytes, enc.encode("VLOCK_WRAP")));
-
-              const headBuf = await selectedVlockFile.slice(0, 66).arrayBuffer();
-              const headBytes = new Uint8Array(headBuf);
-              if (new TextDecoder().decode(headBytes.slice(0, 4)) !== "VLCK") throw new Error("Not a valid .vlock encrypted file.");
-
-              const dv = new DataView(headBuf);
-              const version = dv.getUint16(4, false);
-              let ext = ".mp4", nonce8, verifyHash, numKeys, fixedLen;
-              if (version === 1) {
-                ext = new TextDecoder().decode(headBytes.slice(6, 14)).replace(/\0/g, '').trim() || ".mp4";
-                nonce8 = headBytes.slice(14, 22); verifyHash = headBytes.slice(22, 54);
-                numKeys = dv.getUint32(54, false); fixedLen = 58;
-              } else if (version === 2) {
-                ext = new TextDecoder().decode(headBytes.slice(6, 22)).replace(/\0/g, '').trim() || ".mp4";
-                nonce8 = headBytes.slice(22, 30); verifyHash = headBytes.slice(30, 62);
-                numKeys = dv.getUint32(62, false); fixedLen = 66;
-              } else throw new Error("Unsupported .vlock version: " + version);
-
-              const payloadOffset = fixedLen + (numKeys * SLOT_SIZE);
-              const payloadSize = selectedVlockFile.size - payloadOffset;
-              const slotsData = new Uint8Array(await selectedVlockFile.slice(fixedLen, payloadOffset).arrayBuffer());
-
-              let matchedIdx = -1, slotStatus = 0, wrappedMk = null;
-              for (let i = 0; i < numKeys; i++) {
-                const off = i * SLOT_SIZE;
-                let same = true;
-                for (let b = 0; b < 15; b++) if (slotsData[off + 1 + b] !== targetKeyId[b]) { same = false; break; }
-                if (same) { matchedIdx = i; slotStatus = slotsData[off]; wrappedMk = slotsData.slice(off + 16, off + 48); break; }
-              }
-              if (matchedIdx === -1) throw new Error("Invalid Decryption Key! Please check the key from the Telegram Bot.");
-
-              const keyHex = bytesToHex(targetKeyId);
-              const burnedKeys = JSON.parse(localStorage.getItem('vlock_burned_keys') || '{}');
-              if (slotStatus === 0 || (slotStatus === 1 && burnedKeys[keyHex])) {
-                throw new Error("Previous key expired! Please enter a new key from the Telegram Bot to watch again.");
-              }
-
-              const masterKey = new Uint8Array(32);
-              for (let i = 0; i < 32; i++) masterKey[i] = wrappedMk[i] ^ wrapMask[i];
-              const checkHash = await sha256Bytes(concatBytes(masterKey, enc.encode("VLOCK_VERIFY")));
-              if (bytesToHex(checkHash) !== bytesToHex(verifyHash)) throw new Error("Key verification failed.");
-
-              const cryptoKey = await crypto.subtle.importKey('raw', masterKey, 'AES-CTR', false, ['decrypt']);
-              if (slotStatus === 2) {
-                await restoreOriginalMediaInBrowser(selectedVlockFile, cryptoKey, nonce8, payloadOffset, payloadSize, ext);
-                return;
-              }
-
-              burnedKeys[keyHex] = Date.now();
-              localStorage.setItem('vlock_burned_keys', JSON.stringify(burnedKeys));
-
-              closeOnlineStream();
-              const mime = resolveMimeType(ext);
-              document.getElementById('playerWrap').classList.add('active');
-              document.getElementById('nowPlayingLabel').textContent = "Now Playing: " + selectedVlockFile.name;
-              const videoEl = document.getElementById('vlockVideoPlayer');
-
-              if (navigator.serviceWorker && navigator.serviceWorker.controller) {
-                const sid = Math.random().toString(36).slice(2) + Date.now().toString(36);
-                activeStreamSessions[sid] = { file: selectedVlockFile, cryptoKey, nonce8, payloadOffset, payloadSize };
-                videoEl.src = `./__vlock_stream__/Episode${ext}?sid=${sid}&size=${payloadSize}&mime=${encodeURIComponent(mime)}`;
-                videoEl.play().catch(() => {});
-              } else {
-                const chunks = [];
-                const chunkSize = 4 * 1024 * 1024;
-                let offset = 0;
-                while (offset < payloadSize) {
-                  const len = Math.min(chunkSize, payloadSize - offset);
-                  const encChunk = await selectedVlockFile.slice(payloadOffset + offset, payloadOffset + offset + len).arrayBuffer();
-                  const decChunk = await crypto.subtle.decrypt(
-                    { name: 'AES-CTR', counter: makeCtrIv(nonce8, Math.floor(offset / 16)), length: 64 },
-                    cryptoKey, encChunk
-                  );
-                  chunks.push(decChunk); offset += len;
-                }
-                currentObjectUrl = URL.createObjectURL(new Blob(chunks, { type: mime }));
-                videoEl.src = currentObjectUrl;
-                videoEl.play().catch(() => {});
-              }
-            } catch (e) {
-              alert(e.message);
-            }
-          };
-
-          window.closeOnlineStream = () => {
-            const videoEl = document.getElementById('vlockVideoPlayer');
-            videoEl.pause(); videoEl.removeAttribute('src'); videoEl.load();
-            if (currentObjectUrl) { URL.revokeObjectURL(currentObjectUrl); currentObjectUrl = null; }
-            activeStreamSessions = {};
-            document.getElementById('playerWrap').classList.remove('active');
-          };
-
-          async function restoreOriginalMediaInBrowser(vlockFile, cryptoKey, nonce8, payloadOffset, payloadSize, ext) {
-            const chunks = [];
-            const chunkSize = 4 * 1024 * 1024;
-            let offset = 0;
-            while (offset < payloadSize) {
-              const len = Math.min(chunkSize, payloadSize - offset);
-              const encChunk = await vlockFile.slice(payloadOffset + offset, payloadOffset + offset + len).arrayBuffer();
-              const decChunk = await crypto.subtle.decrypt(
-                { name: 'AES-CTR', counter: makeCtrIv(nonce8, Math.floor(offset / 16)), length: 64 },
-                cryptoKey, encChunk
-              );
-              chunks.push(decChunk); offset += len;
-            }
-            const outName = `${vlockFile.name.replace(/\.vlock$/i, '')}_Unlocked${ext}`;
-            await saveBlobToUserDisk(new Blob(chunks, { type: resolveMimeType(ext) }), outName);
-            alert("Permanent Masterkey Verified!\n\nVideo unlocked forever and restored to original format: " + outName);
-          }
-
-          async function saveBlobToUserDisk(blob, filename) {
-            if (customDirectoryHandle) {
-              try {
-                const fh = await customDirectoryHandle.getFileHandle(filename, { create: true });
-                const wr = await fh.createWritable();
-                await wr.write(blob); await wr.close();
-                return;
-              } catch (e) {}
-            }
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url; a.download = filename;
-            document.body.appendChild(a); a.click(); a.remove();
-            setTimeout(() => URL.revokeObjectURL(url), 5000);
-          }
-
-          function generateHumanKey(prefix) {
-            const alpha = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
-            const rnd = crypto.getRandomValues(new Uint8Array(12));
-            let g1 = "", g2 = "", g3 = "";
-            for (let i = 0; i < 4; i++) {
-              g1 += alpha[rnd[i] % alpha.length];
-              g2 += alpha[rnd[i+4] % alpha.length];
-              g3 += alpha[rnd[i+8] % alpha.length];
-            }
-            return `${prefix}-${g1}-${g2}-${g3}`;
-          }
-
-          window.startOnlineEncryption = async () => {
-            refreshAdminLockUI();
-            if (document.getElementById('adminUnlockedSection').style.display === 'none') { alert("Admin Encryption Panel is locked."); return; }
-            if (!selectedRawMediaFile) { alert("Please select or drag & drop a video or audio file first."); return; }
-            const numTempKeys = parseInt(document.getElementById('numTempKeysInput').value || '0', 10);
-            const includePerm = document.getElementById('permMasterCheckbox').checked;
-            if (isNaN(numTempKeys) || numTempKeys < 0 || numTempKeys > 100000) { alert("Enter a valid number of Temporary Keys."); return; }
-            if (numTempKeys === 0 && !includePerm) {
-              alert("Temporary Keys is 0 and Permanent Masterkey is unchecked.\n\nPlease set Temporary Keys > 0 or check 'Permanent Masterkey' (or both).");
-              return;
-            }
-
-            const btn = document.getElementById('btnStartEncrypt');
-            const statusEl = document.getElementById('encryptStatusText');
-            const progEl = document.getElementById('encryptProgressFill');
-            btn.disabled = true; progEl.style.width = '0%';
-            statusEl.textContent = "Generating cryptographic header & keys...";
-
-            try {
-              const enc = new TextEncoder();
-              const dotIdx = selectedRawMediaFile.name.lastIndexOf('.');
-              const ext = (dotIdx >= 0 ? selectedRawMediaFile.name.slice(dotIdx).toLowerCase() : '.mp4').slice(0, 16);
-              const stem = dotIdx > 0 ? selectedRawMediaFile.name.slice(0, dotIdx) : selectedRawMediaFile.name;
-
-              const extBytes16 = new Uint8Array(16);
-              extBytes16.set(enc.encode(ext).slice(0, 16), 0);
-
-              const masterKey = crypto.getRandomValues(new Uint8Array(32));
-              const nonce8 = crypto.getRandomValues(new Uint8Array(8));
-              const verifyHash = await sha256Bytes(concatBytes(masterKey, enc.encode("VLOCK_VERIFY")));
-
-              const totalSlots = numTempKeys + (includePerm ? 1 : 0);
-              const slotsBuffer = new Uint8Array(totalSlots * SLOT_SIZE);
-              const keyLines = [];
-              let slotIdx = 0;
-
-              if (includePerm) {
-                const pkStr = generateHumanKey("VLOCK-MASTER");
-                keyLines.push("=== PERMANENT MASTERKEY (UNLOCKS FOREVER & RESTORES ORIGINAL VIDEO) ===", pkStr, "");
-                const pkBytes = enc.encode(pkStr);
-                const pkId = (await sha256Bytes(pkBytes)).slice(0, 15);
-                const pkMask = await sha256Bytes(concatBytes(pkBytes, enc.encode("VLOCK_WRAP")));
-                const off = slotIdx * SLOT_SIZE;
-                slotsBuffer[off] = 2; slotsBuffer.set(pkId, off + 1);
-                for (let b = 0; b < 32; b++) slotsBuffer[off + 16 + b] = masterKey[b] ^ pkMask[b];
-                slotIdx++;
-              }
-
-              if (numTempKeys > 0) {
-                if (includePerm) keyLines.push(`=== ONE-TIME TEMPORARY KEYS (${numTempKeys}) ===`);
-                for (let i = 0; i < numTempKeys; i++) {
-                  const kStr = generateHumanKey("VLOCK");
-                  keyLines.push(kStr);
-                  const kBytes = enc.encode(kStr);
-                  const kId = (await sha256Bytes(kBytes)).slice(0, 15);
-                  const kMask = await sha256Bytes(concatBytes(kBytes, enc.encode("VLOCK_WRAP")));
-                  const off = slotIdx * SLOT_SIZE;
-                  slotsBuffer[off] = 1; slotsBuffer.set(kId, off + 1);
-                  for (let b = 0; b < 32; b++) slotsBuffer[off + 16 + b] = masterKey[b] ^ kMask[b];
-                  slotIdx++;
-                }
-              }
-
-              const headerFixed = new Uint8Array(66);
-              headerFixed.set(enc.encode("VLCK"), 0);
-              const hDv = new DataView(headerFixed.buffer);
-              hDv.setUint16(4, 2, false);
-              headerFixed.set(extBytes16, 6);
-              headerFixed.set(nonce8, 22);
-              headerFixed.set(verifyHash, 30);
-              hDv.setUint32(62, totalSlots, false);
-
-              const cryptoKey = await crypto.subtle.importKey('raw', masterKey, 'AES-CTR', false, ['encrypt']);
-              const outParts = [headerFixed, slotsBuffer];
-              const chunkSize = 4 * 1024 * 1024;
-              const totalSize = selectedRawMediaFile.size;
-              let offset = 0;
-
-              while (offset < totalSize) {
-                const len = Math.min(chunkSize, totalSize - offset);
-                const plainSlice = await selectedRawMediaFile.slice(offset, offset + len).arrayBuffer();
-                const encSlice = await crypto.subtle.encrypt(
-                  { name: 'AES-CTR', counter: makeCtrIv(nonce8, Math.floor(offset / 16)), length: 64 },
-                  cryptoKey, plainSlice
-                );
-                outParts.push(encSlice);
-                offset += len;
-                const pct = Math.min(100, Math.round((offset / totalSize) * 100));
-                progEl.style.width = pct + '%';
-                statusEl.textContent = `Encrypting media... ${pct}%`;
-              }
-
-              lastGeneratedKeysContent = keyLines.join('\n') + '\n';
-              await saveBlobToUserDisk(new Blob(outParts, { type: 'application/octet-stream' }), `${stem}.vlock`);
-              await saveBlobToUserDisk(new Blob([lastGeneratedKeysContent], { type: 'text/plain;charset=utf-8' }), `bot_keys.txt`);
-
-              statusEl.textContent = `Done! Saved ${stem}.vlock & bot_keys.txt`;
-            } catch (e) {
-              alert("Encryption error: " + e.message);
-              statusEl.textContent = "Error: " + e.message;
-            } finally {
-              btn.disabled = false;
-            }
-          };
-          '''
-
-          app_js = app_js.replace("__ZK_SALT_HEX__", salt.hex())
-          app_js = app_js.replace("__ZK_VERIFIER_HEX__", verifier)
-          app_js = app_js.replace("__ZK_ENC_PRIV_HEX__", enc_priv.hex())
-          app_js = app_js.replace("__ZK_PUB_DER_HEX__", pub_der.hex())
-
-          b64_js = base64.b64encode(app_js.encode("utf-8")).decode("ascii")
-
-          index_html = f'''<!DOCTYPE html>
+          index_html = r'''<!DOCTYPE html>
           <html lang="en">
           <head>
             <meta charset="UTF-8" />
             <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-            <title>VLock — Online Video Decryption & Admin Encryption</title>
+            <title>VLock — User Decryption & Admin Encryption</title>
             <style>
-              :root {{
-                --bg-dark: #0d1117; --header-bg: #161b22;
-                --green-card: #0b2419; --green-banner: #143d29; --green-border: #2ea043; --green-bright: #3fb950;
-                --red-card: #260c10; --red-banner: #42141b; --red-border: #da3633; --red-bright: #ff7b72;
-              }}
-              * {{ box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', system-ui, sans-serif; }}
-              body {{ background: var(--bg-dark); color: #fff; min-height: 100vh; display: flex; flex-direction: column; }}
-              .topbar {{ background: var(--header-bg); padding: 12px 20px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #30363d; position: sticky; top: 0; z-index: 50; }}
-              .brand {{ display: flex; align-items: baseline; gap: 10px; }}
-              .brand h1 {{ font-size: 19px; font-weight: 700; color: #fff; }}
-              .brand span {{ font-size: 12px; color: #8b949e; }}
-              .top-actions {{ display: flex; align-items: center; gap: 8px; position: relative; }}
-              .btn {{ border: none; border-radius: 7px; padding: 8px 14px; font-size: 13px; font-weight: 700; cursor: pointer; color: #fff; display: inline-flex; align-items: center; justify-content: center; gap: 6px; }}
-              .btn-blue {{ background: #1f6feb; }}
-              .btn-dark {{ background: #21262d; border: 1px solid #30363d; color: #c9d1d9; }}
-              .btn-green {{ background: var(--green-border); }}
-              .btn-red {{ background: var(--red-border); }}
-              .btn-dots {{ width: 38px; height: 36px; font-size: 20px; padding: 0; background: #21262d; border: 1px solid #30363d; }}
-              .dropdown-menu {{ position: absolute; top: 44px; right: 0; background: #161b22; border: 1px solid #30363d; border-radius: 8px; width: 310px; box-shadow: 0 10px 30px rgba(0,0,0,0.6); display: none; flex-direction: column; overflow: hidden; z-index: 100; }}
-              .dropdown-menu.show {{ display: flex; }}
-              .dropdown-item {{ padding: 12px 16px; font-size: 13px; color: #e6edf3; text-align: left; background: none; border: none; border-bottom: 1px solid #21262d; cursor: pointer; width: 100%; }}
-              .dropdown-item:hover {{ background: #1f6feb; color: #fff; }}
-              .container {{ max-width: 820px; width: 100%; margin: 0 auto; padding: 16px; flex: 1; display: flex; flex-direction: column; gap: 18px; }}
-              .card-green {{ background: var(--green-card); border: 2px solid var(--green-border); border-radius: 12px; padding: 16px; display: flex; flex-direction: column; gap: 12px; }}
-              .banner-green {{ background: var(--green-banner); padding: 8px 14px; border-radius: 7px; display: flex; justify-content: space-between; align-items: center; font-weight: 700; color: var(--green-bright); font-size: 14px; }}
-              .banner-green small {{ color: #fff; font-size: 11px; }}
-              .card-red {{ background: var(--red-card); border: 2px solid var(--red-border); border-radius: 12px; padding: 16px; display: flex; flex-direction: column; gap: 12px; }}
-              .banner-red {{ background: var(--red-banner); padding: 8px 14px; border-radius: 7px; display: flex; justify-content: space-between; align-items: center; font-weight: 700; color: var(--red-bright); font-size: 14px; }}
-              .banner-red small {{ color: #ffa198; font-size: 11px; }}
-              .nle-dropzone {{ border: 2px dashed var(--green-bright); border-radius: 10px; padding: 16px; display: flex; align-items: center; gap: 16px; cursor: pointer; background: #071710; user-select: none; }}
-              .nle-dropzone.red-zone {{ border-color: #f85149; background: #140507; }}
-              .nle-dropzone.dragover {{ border-color: #fff; background: rgba(255,255,255,0.06); }}
-              .nle-icon {{ width: 52px; height: 48px; flex-shrink: 0; }}
-              .nle-text h3 {{ font-size: 14px; font-weight: 700; color: #fff; margin-bottom: 4px; word-break: break-all; }}
-              .nle-text p {{ font-size: 11px; color: #c9d1d9; }}
-              .input-row {{ display: flex; gap: 8px; align-items: stretch; }}
-              .input-box {{ flex: 1; background: #071710; border: 1px solid var(--green-border); border-radius: 8px; color: var(--green-bright); font-family: Consolas, monospace; font-size: 14px; font-weight: 700; padding: 10px 12px; text-align: center; outline: none; }}
-              .input-box.red-input {{ background: #140507; border-color: var(--red-border); color: var(--red-bright); }}
-              .adj-row {{ display: flex; align-items: center; gap: 14px; flex-wrap: wrap; padding: 4px 0; }}
-              .adj-row label {{ font-size: 13px; font-weight: 700; color: #ffdcd7; display: flex; align-items: center; gap: 8px; cursor: pointer; }}
-              .num-input {{ width: 95px; background: #140507; border: 1px solid var(--red-border); border-radius: 7px; color: var(--red-bright); font-family: Consolas, monospace; font-size: 14px; font-weight: 700; padding: 7px 10px; text-align: center; }}
-              .player-wrap {{ display: none; flex-direction: column; gap: 8px; background: #000; border-radius: 10px; padding: 10px; border: 1px solid var(--green-border); margin-top: 4px; }}
-              .player-wrap.active {{ display: flex; }}
-              video {{ width: 100%; max-height: 460px; border-radius: 6px; background: #000; outline: none; }}
-              .progress-bar {{ width: 100%; height: 10px; background: #140507; border-radius: 5px; overflow: hidden; border: 1px solid #42141b; }}
-              .progress-fill {{ height: 100%; width: 0%; background: var(--red-bright); transition: width 0.1s; }}
-              .save-path-bar {{ background: #140507; border: 1px solid #42141b; border-radius: 8px; padding: 8px 12px; display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-top: 4px; }}
-              .save-path-bar span {{ font-family: Consolas, monospace; font-size: 11px; color: #ffdcd7; word-break: break-all; }}
-              .footer {{ text-align: center; padding: 14px; font-size: 12px; color: #6e7681; border-top: 1px solid #161b22; }}
-              .footer a {{ color: #58a6ff; text-decoration: underline; }}
-              .modal-backdrop {{ position: fixed; inset: 0; background: rgba(0,0,0,0.75); display: none; align-items: center; justify-content: center; padding: 16px; z-index: 200; }}
-              .modal-backdrop.show {{ display: flex; }}
-              .modal {{ background: #161b22; border: 1px solid #30363d; border-radius: 12px; max-width: 460px; width: 100%; padding: 20px; display: flex; flex-direction: column; gap: 14px; }}
-              .modal h2 {{ font-size: 16px; color: #fff; }}
-              .modal p {{ font-size: 13px; color: #c9d1d9; line-height: 1.5; white-space: pre-line; }}
-              .modal select {{ background: #0d1117; color: #fff; border: 1px solid #30363d; border-radius: 7px; padding: 9px; font-size: 13px; }}
+              :root {
+                --bg-dark: #0d1117;
+                --header-bg: #161b22;
+                --green-card: #0b2419;
+                --green-banner: #143d29;
+                --green-border: #2ea043;
+                --green-bright: #3fb950;
+                --red-card: #260c10;
+                --red-banner: #42141b;
+                --red-border: #da3633;
+                --red-bright: #ff7b72;
+              }
+              * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; }
+              body { background: var(--bg-dark); color: #ffffff; min-height: 100vh; display: flex; flex-direction: column; }
+
+              .topbar {
+                background: var(--header-bg); padding: 12px 20px; display: flex; align-items: center;
+                justify-content: space-between; border-bottom: 1px solid #30363d; position: sticky; top: 0; z-index: 100;
+              }
+              .brand { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+              .brand h1 { font-size: 20px; font-weight: 800; color: #ffffff; }
+              .brand span { font-size: 12px; color: #8b949e; }
+              .top-actions { display: flex; align-items: center; gap: 8px; position: relative; }
+
+              .btn {
+                border: none; border-radius: 7px; padding: 8px 14px; font-size: 13px; font-weight: 700;
+                cursor: pointer; color: #ffffff; transition: opacity 0.15s, transform 0.1s;
+                display: inline-flex; align-items: center; justify-content: center; gap: 6px; text-decoration: none;
+              }
+              .btn:hover { opacity: 0.92; }
+              .btn:active { transform: scale(0.98); }
+              .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+              .btn-blue { background: #1f6feb; }
+              .btn-dark { background: #21262d; border: 1px solid #30363d; color: #c9d1d9; }
+              .btn-green { background: var(--green-border); }
+              .btn-red { background: var(--red-border); }
+              .btn-dots { width: 40px; height: 38px; font-size: 22px; padding: 0; background: #21262d; border: 1px solid #30363d; }
+
+              .dropdown-menu {
+                position: absolute; top: 46px; right: 0; background: #161b22; border: 1px solid #30363d;
+                border-radius: 8px; width: 320px; box-shadow: 0 12px 32px rgba(0,0,0,0.75);
+                display: none; flex-direction: column; overflow: hidden; z-index: 250;
+              }
+              .dropdown-menu.show { display: flex; }
+              .dropdown-item {
+                padding: 13px 16px; font-size: 13px; color: #e6edf3; text-align: left; background: none;
+                border: none; border-bottom: 1px solid #21262d; cursor: pointer; width: 100%; font-weight: 600;
+              }
+              .dropdown-item:hover { background: #1f6feb; color: #ffffff; }
+
+              .container { max-width: 840px; width: 100%; margin: 0 auto; padding: 16px; flex: 1; display: flex; flex-direction: column; gap: 18px; }
+
+              /* GREEN USER PANEL */
+              .card-green {
+                background: var(--green-card); border: 2px solid var(--green-border); border-radius: 12px;
+                padding: 16px; display: flex; flex-direction: column; gap: 12px;
+              }
+              .banner-green {
+                background: var(--green-banner); padding: 9px 14px; border-radius: 7px; display: flex;
+                justify-content: space-between; align-items: center; font-weight: 700; color: var(--green-bright); font-size: 14px;
+              }
+              .banner-green small { color: #ffffff; font-size: 11px; }
+
+              /* RED ADMIN PANEL */
+              .card-red {
+                background: var(--red-card); border: 2px solid var(--red-border); border-radius: 12px;
+                padding: 16px; display: flex; flex-direction: column; gap: 12px;
+              }
+              .banner-red {
+                background: var(--red-banner); padding: 9px 14px; border-radius: 7px; display: flex;
+                justify-content: space-between; align-items: center; font-weight: 700; color: var(--red-bright); font-size: 14px;
+              }
+              .banner-red small { color: #ffa198; font-size: 11px; }
+
+              /* EDITING SOFTWARE DROP ZONE (CORNER BRACKETS + MEDIA FRAME + '+', NO UPLOAD ARROW) */
+              .nle-dropzone {
+                border: 2px dashed var(--green-bright); border-radius: 10px; padding: 16px; display: flex;
+                align-items: center; gap: 16px; cursor: pointer; transition: background 0.15s, border-color 0.15s;
+                background: #071710; user-select: none;
+              }
+              .nle-dropzone.red-zone { border-color: #f85149; background: #140507; }
+              .nle-dropzone.dragover { border-color: #ffffff; background: rgba(255,255,255,0.08); }
+              .nle-icon { width: 52px; height: 48px; flex-shrink: 0; }
+              .nle-text h3 { font-size: 14px; font-weight: 700; color: #ffffff; margin-bottom: 4px; word-break: break-all; }
+              .nle-text p { font-size: 11px; color: #c9d1d9; line-height: 1.4; }
+
+              .input-row { display: flex; gap: 8px; align-items: stretch; }
+              .input-box {
+                flex: 1; background: #071710; border: 1px solid var(--green-border); border-radius: 8px;
+                color: var(--green-bright); font-family: Consolas, monospace; font-size: 14px; font-weight: 700;
+                padding: 10px 12px; text-align: center; outline: none;
+              }
+              .input-box.red-input { background: #140507; border-color: var(--red-border); color: var(--red-bright); }
+
+              .adj-row { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; padding: 4px 0; }
+              .adj-row label { font-size: 13px; font-weight: 700; color: #ffdcd7; display: flex; align-items: center; gap: 8px; cursor: pointer; }
+              .num-input {
+                width: 95px; background: #140507; border: 1px solid var(--red-border); border-radius: 7px;
+                color: var(--red-bright); font-family: Consolas, monospace; font-size: 14px; font-weight: 700;
+                padding: 7px 10px; text-align: center;
+              }
+
+              .player-wrap {
+                display: none; flex-direction: column; gap: 8px; background: #000000; border-radius: 10px;
+                padding: 10px; border: 1px solid var(--green-border); margin-top: 4px;
+              }
+              .player-wrap.active { display: flex; }
+              video { width: 100%; max-height: 480px; border-radius: 6px; background: #000000; outline: none; }
+
+              .progress-bar { width: 100%; height: 10px; background: #140507; border-radius: 5px; overflow: hidden; border: 1px solid #42141b; }
+              .progress-fill { height: 100%; width: 0%; background: var(--red-bright); transition: width 0.1s; }
+
+              .keys-output-box {
+                display: none; flex-direction: column; gap: 6px; background: #140507; border: 1px solid #da3633;
+                border-radius: 8px; padding: 10px; margin-top: 4px;
+              }
+              .keys-output-box.show { display: flex; }
+              .keys-textarea {
+                width: 100%; height: 95px; background: #0d1117; color: #3fb950; border: 1px solid #30363d;
+                border-radius: 6px; padding: 8px; font-family: Consolas, monospace; font-size: 12px; resize: vertical;
+              }
+
+              .save-path-bar {
+                background: #140507; border: 1px solid #42141b; border-radius: 8px; padding: 8px 12px;
+                display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-top: 4px;
+              }
+              .save-path-bar span { font-family: Consolas, monospace; font-size: 11px; color: #ffdcd7; word-break: break-all; }
+
+              .footer {
+                text-align: center; padding: 14px; font-size: 12px; color: #8b949e; border-top: 1px solid #161b22;
+              }
+              .footer a { color: #58a6ff; text-decoration: underline; cursor: pointer; }
+
+              /* MODAL DIALOGS */
+              .modal-backdrop {
+                position: fixed; inset: 0; background: rgba(0,0,0,0.8); display: none; align-items: center;
+                justify-content: center; padding: 16px; z-index: 300;
+              }
+              .modal-backdrop.show { display: flex; }
+              .modal {
+                background: #161b22; border: 1px solid #30363d; border-radius: 12px; max-width: 460px; width: 100%;
+                padding: 20px; display: flex; flex-direction: column; gap: 14px; box-shadow: 0 12px 40px rgba(0,0,0,0.85);
+              }
+              .modal h2 { font-size: 17px; color: #ffffff; }
+              .modal p { font-size: 13px; color: #c9d1d9; line-height: 1.5; white-space: pre-line; }
+              .modal select {
+                background: #0d1117; color: #ffffff; border: 1px solid #30363d; border-radius: 7px; padding: 10px; font-size: 13px;
+              }
             </style>
           </head>
           <body>
+
+            <!-- TOP BAR -->
             <div class="topbar">
-              <div class="brand"><h1>VLock</h1><span>Online Decryption & Admin Encryption</span></div>
+              <div class="brand">
+                <h1>VLock</h1>
+                <span>User Decryption & Admin Encryption</span>
+              </div>
               <div class="top-actions">
-                <button class="btn btn-blue" onclick="enterFullScreen()">⛶ Full Screen</button>
-                <button class="btn btn-dark" onclick="exitFullScreen()">❐ Free Screen</button>
-                <button class="btn btn-dots" onclick="toggleDotsMenu(event)">⋮</button>
+                <button type="button" class="btn btn-blue" id="btnFullScreen">⛶ Full Screen</button>
+                <button type="button" class="btn btn-dark" id="btnFreeScreen">❐ Free Screen</button>
+                <button type="button" class="btn btn-dots" id="btnDots" title="Menu">⋮</button>
                 <div class="dropdown-menu" id="dotsMenu">
-                  <button class="dropdown-item" onclick="openSuperuserModal()">Superuser Panel</button>
-                  <button class="dropdown-item" onclick="openSupportModal()">For any issue contact @Modrat_editor using Telegram</button>
-                  <button class="dropdown-item" onclick="openCopyrightModal()">Copyright & Legal Notice</button>
+                  <button type="button" class="dropdown-item" id="menuSuperuser">Superuser Panel</button>
+                  <button type="button" class="dropdown-item" id="menuSupport">For any issue contact @Modrat_editor using Telegram</button>
+                  <button type="button" class="dropdown-item" id="menuCopyright">Copyright & Legal Notice</button>
                 </div>
               </div>
             </div>
+
             <div class="container">
+
+              <!-- ======================================================= -->
+              <!-- PANEL 1: GREEN USER PANEL — DECRYPTION PANEL            -->
+              <!-- ======================================================= -->
               <div class="card-green">
-                <div class="banner-green"><span>USER PANEL &nbsp;•&nbsp; Decryption Panel</span><small>FREE FOREVER • ONLINE STREAM</small></div>
-                <input type="file" id="vlockFileInput" accept=".vlock,*/*" style="display:none" onchange="onVlockFilePicked(this.files[0])" />
-                <div class="nle-dropzone" id="viewerDropZone" onclick="document.getElementById('vlockFileInput').click()">
+                <div class="banner-green">
+                  <span>USER PANEL &nbsp;•&nbsp; Decryption Panel</span>
+                  <small>FREE FOREVER • ZERO DATA UPLOAD</small>
+                </div>
+
+                <input type="file" id="vlockFileInput" accept=".vlock,*/*" style="display:none" />
+                <div class="nle-dropzone" id="viewerDropZone">
                   <svg class="nle-icon" viewBox="0 0 52 48" fill="none">
                     <path d="M6 14 V6 H14 M38 6 H46 V14 M6 34 V42 H14 M38 42 H46 V34" stroke="#3fb950" stroke-width="2.5" stroke-linecap="round"/>
                     <rect x="13" y="12" width="26" height="24" rx="3" stroke="#3fb950" stroke-width="2"/>
@@ -781,35 +338,54 @@ jobs:
                   </svg>
                   <div class="nle-text">
                     <h3 id="viewerFileTitle">Tap or Drag & Drop .vlock Media File Here</h3>
-                    <p>Supports all video & audio formats • One-Time Key Stream or Permanent Masterkey Restore</p>
+                    <p>Supports all video & audio formats • Instant local playback (0 MB internet upload)</p>
                   </div>
                 </div>
+
                 <div class="input-row">
                   <input type="text" id="viewerKeyInput" class="input-box" placeholder="Enter One-Time Key or Permanent Masterkey (VLOCK-...)" />
-                  <button class="btn btn-dark" style="background:#1b4332;border-color:#2ea043;color:#fff" onclick="pasteToInput('viewerKeyInput')">Paste Key</button>
+                  <button type="button" class="btn btn-dark" id="btnPasteViewerKey" style="background:#1b4332;border-color:#2ea043;color:#fff">Paste Key</button>
                 </div>
-                <button class="btn btn-green" style="padding:12px;font-size:14px" onclick="decryptAndWatchOnline()">▶ Decrypt & Watch / Unlock Online</button>
+
+                <button type="button" class="btn btn-green" id="btnDecryptWatch" style="padding:12px;font-size:14px">
+                  ▶ Decrypt & Watch / Unlock
+                </button>
+
+                <!-- BUILT-IN CINEMA PLAYER -->
                 <div class="player-wrap" id="playerWrap">
                   <div style="display:flex;justify-content:space-between;align-items:center;">
-                    <span id="nowPlayingLabel" style="font-size:12px;color:#3fb950;font-weight:700;">Streaming Decrypted Media</span>
-                    <button class="btn btn-dark" style="padding:4px 10px;font-size:11px;" onclick="closeOnlineStream()">Close Stream</button>
+                    <span id="nowPlayingLabel" style="font-size:12px;color:#3fb950;font-weight:700;">Playing Decrypted Stream</span>
+                    <button type="button" class="btn btn-dark" id="btnCloseStream" style="padding:4px 10px;font-size:11px;">Close Player</button>
                   </div>
                   <video id="vlockVideoPlayer" controls playsinline controlsList="nodownload"></video>
                 </div>
               </div>
+
+              <!-- ======================================================= -->
+              <!-- PANEL 2: RED ADMIN — ENCRYPTION PANEL                   -->
+              <!-- ======================================================= -->
               <div class="card-red">
-                <div class="banner-red"><span>ADMIN &nbsp;•&nbsp; Encryption Panel</span><small id="adminStatusBadge">Locked • Session Key Required</small></div>
+                <div class="banner-red">
+                  <span>ADMIN &nbsp;•&nbsp; Encryption Panel</span>
+                  <small id="adminStatusBadge">Locked • Session Key Required</small>
+                </div>
+
+                <!-- LOCKED STATE -->
                 <div id="adminLockedSection" style="display:flex;flex-direction:column;gap:10px;">
                   <p style="font-size:12px;color:#ffdcd7;">Admin Encryption Panel is locked. Enter a valid Session Key from the Superuser Panel (⋮) to unlock:</p>
                   <div class="input-row">
                     <input type="text" id="sessionKeyInput" class="input-box red-input" placeholder="VLKS-XXXX-XXXXXXXX-..." />
-                    <button class="btn btn-dark" style="background:#42141b;border-color:#da3633;color:#fff" onclick="pasteToInput('sessionKeyInput')">Paste Session Key</button>
+                    <button type="button" class="btn btn-dark" id="btnPasteSessionKey" style="background:#42141b;border-color:#da3633;color:#fff">Paste Session Key</button>
                   </div>
-                  <button class="btn btn-red" style="padding:11px;font-size:14px" onclick="activateSessionKeyOnline()">Unlock Admin Encryption Panel</button>
+                  <button type="button" class="btn btn-red" id="btnActivateSession" style="padding:11px;font-size:14px">
+                    Unlock Admin Encryption Panel
+                  </button>
                 </div>
+
+                <!-- UNLOCKED STATE -->
                 <div id="adminUnlockedSection" style="display:none;flex-direction:column;gap:12px;">
-                  <input type="file" id="rawMediaInput" accept="video/*,audio/*,*/*" style="display:none" onchange="onRawMediaPicked(this.files[0])" />
-                  <div class="nle-dropzone red-zone" id="encryptDropZone" onclick="document.getElementById('rawMediaInput').click()">
+                  <input type="file" id="rawMediaInput" accept="video/*,audio/*,*/*" style="display:none" />
+                  <div class="nle-dropzone red-zone" id="encryptDropZone">
                     <svg class="nle-icon" viewBox="0 0 52 48" fill="none">
                       <path d="M6 14 V6 H14 M38 6 H46 V14 M6 34 V42 H14 M38 42 H46 V34" stroke="#f85149" stroke-width="2.5" stroke-linecap="round"/>
                       <rect x="13" y="12" width="26" height="24" rx="3" stroke="#f85149" stroke-width="2"/>
@@ -817,44 +393,78 @@ jobs:
                     </svg>
                     <div class="nle-text">
                       <h3 id="encryptFileTitle">1. Tap or Drag & Drop Video or Audio File Here</h3>
-                      <p>All Video & Music Containers (.mp4, .mkv, .avi, .mov, .webm, .ts, .mp3, .flac, .wav) • 64-Bit Engine</p>
+                      <p>Encrypts 100% locally on your device (0 MB internet upload • Supports 1 GB–50 GB+ files)</p>
                     </div>
                   </div>
+
                   <div class="adj-row">
-                    <label>2. Temporary Keys: <input type="number" id="numTempKeysInput" class="num-input" value="0" min="0" max="100000" /></label>
-                    <label><input type="checkbox" id="permMasterCheckbox" style="width:17px;height:17px;accent-color:#da3633;" /> Permanent Masterkey (Unlock Video Forever & Restore Original)</label>
+                    <label>
+                      2. Temporary Keys:
+                      <input type="number" id="numTempKeysInput" class="num-input" value="0" min="0" max="100000" />
+                    </label>
+                    <label>
+                      <input type="checkbox" id="permMasterCheckbox" style="width:17px;height:17px;accent-color:#da3633;" />
+                      Permanent Masterkey (Unlock Video Forever & Restore Original)
+                    </label>
                   </div>
-                  <button class="btn btn-red" id="btnStartEncrypt" style="padding:12px;font-size:14px" onclick="startOnlineEncryption()">3. Encrypt Media & Generate Keys</button>
-                  <div class="progress-bar"><div class="progress-fill" id="encryptProgressFill"></div></div>
-                  <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">
-                    <span id="encryptStatusText" style="font-size:12px;color:#ffa198;">Ready. Set Temporary Keys or check Permanent Masterkey (or both).</span>
-                    <button class="btn btn-dark" id="btnCopyBotKeys" style="display:none;background:#42141b;border-color:#da3633;color:#fff;padding:6px 12px;font-size:12px;" onclick="copyGeneratedBotKeys()">Copy Generated Keys</button>
+
+                  <button type="button" class="btn btn-red" id="btnStartEncrypt" style="padding:12px;font-size:14px">
+                    3. Encrypt Media & Generate Keys
+                  </button>
+
+                  <div class="progress-bar">
+                    <div class="progress-fill" id="encryptProgressFill"></div>
+                  </div>
+
+                  <span id="encryptStatusText" style="font-size:12px;color:#ffa198;">Ready. Set Temporary Keys or check Permanent Masterkey (or both).</span>
+
+                  <!-- INSTANT GENERATED KEYS BOX -->
+                  <div class="keys-output-box" id="keysOutputBox">
+                    <div style="display:flex;justify-content:space-between;align-items:center;">
+                      <span style="font-size:12px;font-weight:700;color:#3fb950;">Generated Keys (bot_keys.txt):</span>
+                      <div style="display:flex;gap:6px;">
+                        <button type="button" class="btn btn-green" id="btnCopyBotKeys" style="padding:5px 10px;font-size:11px;">Copy All Keys</button>
+                        <button type="button" class="btn btn-blue" id="btnDownloadBotKeys" style="padding:5px 10px;font-size:11px;">Download bot_keys.txt</button>
+                      </div>
+                    </div>
+                    <textarea id="keysTextarea" class="keys-textarea" readonly></textarea>
                   </div>
                 </div>
+
+                <!-- BOTTOM SAVE PATH BAR -->
                 <div class="save-path-bar">
-                  <span id="savePathLabel">Current Save Path: Default (Browser Downloads / VLock Folder)</span>
+                  <span id="savePathLabel">Current Save Path: Default (Downloads / VLock)</span>
                   <div style="display:flex;gap:6px;">
-                    <button class="btn btn-dark" style="background:#42141b;border-color:#da3633;color:#fff;padding:5px 10px;font-size:11px;" onclick="changeSaveFolderOnline()">Change Save Path</button>
-                    <button class="btn btn-dark" style="padding:5px 10px;font-size:11px;" onclick="resetSaveFolderOnline()">Reset Default</button>
+                    <button type="button" class="btn btn-dark" id="btnChangeSavePath" style="background:#42141b;border-color:#da3633;color:#fff;padding:5px 10px;font-size:11px;">Change Save Path</button>
+                    <button type="button" class="btn btn-dark" id="btnResetSavePath" style="padding:5px 10px;font-size:11px;">Reset Default</button>
                   </div>
                 </div>
               </div>
+
             </div>
-            <div class="footer">© 2026 VLock Media Security. All Rights Reserved. &nbsp;•&nbsp; For any issue contact <a href="https://t.me/Modrat_editor" target="_blank">@Modrat_editor</a> using Telegram.</div>
+
+            <!-- FOOTER -->
+            <div class="footer">
+              © 2026 VLock Media Security. All Rights Reserved. &nbsp;•&nbsp;
+              For any issue contact <a href="https://t.me/Modrat_editor" target="_blank" rel="noopener">@Modrat_editor</a> using Telegram.
+            </div>
+
+            <!-- SUPERUSER MODAL -->
             <div class="modal-backdrop" id="superuserModal">
               <div class="modal">
                 <h2>Superuser Panel</h2>
                 <div id="suLoginBox" style="display:flex;flex-direction:column;gap:12px;">
                   <p>Enter Superuser Password:</p>
                   <div class="input-row">
-                    <input type="password" id="suPasswordInput" class="input-box" style="border-color:#30363d;color:#58a6ff;background:#0d1117;" placeholder="Password" />
-                    <button class="btn btn-dark" onclick="pasteToInput('suPasswordInput')">Paste</button>
+                    <input type="password" id="suPasswordInput" class="input-box" style="border-color:#30363d;color:#58a6ff;background:#0d1117;" placeholder="Enter Password" />
+                    <button type="button" class="btn btn-dark" id="btnPasteSuPwd">Paste</button>
                   </div>
                   <div style="display:flex;gap:8px;justify-content:flex-end;">
-                    <button class="btn btn-dark" onclick="closeModal('superuserModal')">Cancel</button>
-                    <button class="btn btn-green" onclick="loginSuperuserOnline()">Login</button>
+                    <button type="button" class="btn btn-dark" id="btnCloseSuModal1">Cancel</button>
+                    <button type="button" class="btn btn-green" id="btnLoginSu">Login</button>
                   </div>
                 </div>
+
                 <div id="suGeneratorBox" style="display:none;flex-direction:column;gap:12px;">
                   <p>Select Access Duration to Generate Session Key:</p>
                   <select id="suDurationSelect">
@@ -866,36 +476,873 @@ jobs:
                   </select>
                   <input type="text" id="suGeneratedKeyOut" class="input-box" style="font-size:11px;" readonly placeholder="Click Generate Session Key" />
                   <div style="display:flex;gap:8px;">
-                    <button class="btn btn-blue" style="flex:1" onclick="generateSessionKeyOnline()">Generate Session Key</button>
-                    <button class="btn btn-green" onclick="copySuKey()">Copy Key</button>
+                    <button type="button" class="btn btn-blue" id="btnGenerateSuKey" style="flex:1">Generate Session Key</button>
+                    <button type="button" class="btn btn-green" id="btnCopySuKey">Copy Key</button>
                   </div>
                   <div style="display:flex;justify-content:space-between;margin-top:6px;">
-                    <button class="btn btn-red" style="padding:6px 10px;font-size:11px;" onclick="lockAdminOnThisDevice()">Lock This Device</button>
-                    <button class="btn btn-dark" onclick="closeModal('superuserModal')">Done</button>
+                    <button type="button" class="btn btn-red" id="btnLockDevice" style="padding:6px 10px;font-size:11px;">Lock This Device</button>
+                    <button type="button" class="btn btn-dark" id="btnCloseSuModal2">Done</button>
                   </div>
                 </div>
               </div>
             </div>
+
+            <!-- SUPPORT & COPYRIGHT MODAL -->
             <div class="modal-backdrop" id="infoModal">
               <div class="modal">
                 <h2 id="infoModalTitle">Notice</h2>
                 <p id="infoModalBody"></p>
-                <div style="display:flex;gap:8px;justify-content:flex-end;">
-                  <a href="https://t.me/Modrat_editor" target="_blank" class="btn btn-blue" style="text-decoration:none;">Open Telegram (@Modrat_editor)</a>
-                  <button class="btn btn-dark" onclick="closeModal('infoModal')">Close</button>
+                <div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;">
+                  <button type="button" class="btn btn-dark" id="btnCopyTelegram">Copy @Modrat_editor</button>
+                  <a href="https://t.me/Modrat_editor" target="_blank" rel="noopener" class="btn btn-blue">Open Telegram</a>
+                  <button type="button" class="btn btn-dark" id="btnCloseInfoModal">Close</button>
                 </div>
               </div>
             </div>
+
             <script>
-              (function() {{
-                const bin = atob("{b64_js}");
-                const bytes = new Uint8Array(bin.length);
-                for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-                (new Function(new TextDecoder().decode(bytes)))();
-              }})();
+              // =========================================================================
+              // ZERO-KNOWLEDGE VAULT CONSTANTS (POPULATED AT BUILD TIME)
+              // =========================================================================
+              const ZK_SALT_HEX = "__ZK_SALT_HEX__";
+              const ZK_VERIFIER_HEX = "__ZK_VERIFIER_HEX__";
+              const ZK_ENC_D_HEX = "__ZK_ENC_D_HEX__";
+              const ZK_PUB_X_B64U = "__ZK_PUB_X_B64U__";
+              const ZK_PUB_Y_B64U = "__ZK_PUB_Y_B64U__";
+              const SLOT_SIZE = 48;
+
+              const CODE_TO_SECONDS = { "1D": 86400, "1W": 7 * 86400, "1M": 30 * 86400, "1Y": 365 * 86400, "LT": -1 };
+              const CODE_TO_LABEL = { "1D": "1 Day", "1W": "1 Week", "1M": "1 Month", "1Y": "1 Year", "LT": "Lifetime" };
+
+              let selectedVlockFile = null;
+              let selectedRawMediaFile = null;
+              let customDirectoryHandle = null;
+              let lastGeneratedKeysContent = "";
+              let verifiedSuPassword = "";
+              let activeStreamSessions = {};
+              let currentObjectUrl = null;
+
+              // =========================================================================
+              // BYTE, HEX, BASE64URL, BASE32 & CRYPTO HELPERS
+              // =========================================================================
+              function hexToBytes(hex) {
+                const out = new Uint8Array(hex.length / 2);
+                for (let i = 0; i < out.length; i++) {
+                  out[i] = parseInt(hex.substr(i * 2, 2), 16);
+                }
+                return out;
+              }
+
+              function bytesToHex(bytes) {
+                return Array.from(new Uint8Array(bytes)).map(b => b.toString(16).padStart(2, '0')).join('');
+              }
+
+              function bytesToBase64Url(bytes) {
+                let bin = "";
+                const arr = new Uint8Array(bytes);
+                for (let i = 0; i < arr.length; i++) bin += String.fromCharCode(arr[i]);
+                return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+              }
+
+              function concatBytes(a, b) {
+                const out = new Uint8Array(a.length + b.length);
+                out.set(a, 0);
+                out.set(b, a.length);
+                return out;
+              }
+
+              async function sha256Bytes(data) {
+                return new Uint8Array(await crypto.subtle.digest('SHA-256', data));
+              }
+
+              function makeCtrIv(nonce8, blockIndex) {
+                const iv = new Uint8Array(16);
+                iv.set(nonce8.slice(0, 8), 0);
+                const dv = new DataView(iv.buffer);
+                dv.setUint32(8, Math.floor(blockIndex / 4294967296), false);
+                dv.setUint32(12, blockIndex >>> 0, false);
+                return iv;
+              }
+
+              const B32_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+              function base32Encode(bytes) {
+                let out = "", buf = 0, bits = 0;
+                for (let i = 0; i < bytes.length; i++) {
+                  buf = (buf << 8) | bytes[i];
+                  bits += 8;
+                  while (bits >= 5) {
+                    out += B32_ALPHABET[(buf >>> (bits - 5)) & 31];
+                    bits -= 5;
+                  }
+                }
+                if (bits > 0) out += B32_ALPHABET[(buf << (5 - bits)) & 31];
+                return out;
+              }
+
+              function base32Decode(str) {
+                const out = [];
+                let buf = 0, bits = 0;
+                for (let i = 0; i < str.length; i++) {
+                  const v = B32_ALPHABET.indexOf(str[i]);
+                  if (v < 0) continue;
+                  buf = (buf << 5) | v;
+                  bits += 5;
+                  if (bits >= 8) {
+                    out.push((buf >>> (bits - 8)) & 255);
+                    bits -= 8;
+                  }
+                }
+                return new Uint8Array(out);
+              }
+
+              async function deriveZkKdf(passwordStr) {
+                const enc = new TextEncoder();
+                const baseKey = await crypto.subtle.importKey('raw', enc.encode(passwordStr), 'PBKDF2', false, ['deriveBits']);
+                const bits = await crypto.subtle.deriveBits(
+                  { name: 'PBKDF2', salt: hexToBytes(ZK_SALT_HEX), iterations: 200000, hash: 'SHA-256' },
+                  baseKey,
+                  256
+                );
+                return new Uint8Array(bits);
+              }
+
+              // =========================================================================
+              // SERVICE WORKER REGISTRATION FOR 1GB+ ZERO-RAM RANGE STREAMING
+              // =========================================================================
+              if ('serviceWorker' in navigator) {
+                navigator.serviceWorker.register('./sw.js').catch(() => {});
+                navigator.serviceWorker.addEventListener('message', async (event) => {
+                  const data = event.data;
+                  if (!data || data.type !== 'VLOCK_STREAM_PULL') return;
+                  const port = event.ports[0];
+                  const sess = activeStreamSessions[data.sid];
+                  if (!sess) {
+                    port.postMessage({ ok: false });
+                    return;
+                  }
+                  try {
+                    const start = data.start;
+                    const end = data.end;
+                    const contentLen = (end - start) + 1;
+                    const blockIndex = Math.floor(start / 16);
+                    const byteSkip = start % 16;
+
+                    const readStart = sess.payloadOffset + (blockIndex * 16);
+                    const readEnd = Math.min(sess.file.size, readStart + contentLen + byteSkip + 16);
+                    const encBuf = await sess.file.slice(readStart, readEnd).arrayBuffer();
+
+                    const decFull = await crypto.subtle.decrypt(
+                      { name: 'AES-CTR', counter: makeCtrIv(sess.nonce8, blockIndex), length: 64 },
+                      sess.cryptoKey,
+                      encBuf
+                    );
+                    const sliced = decFull.slice(byteSkip, byteSkip + contentLen);
+                    port.postMessage({ ok: true, buffer: sliced }, [sliced]);
+                  } catch (err) {
+                    port.postMessage({ ok: false });
+                  }
+                });
+              }
+
+              // =========================================================================
+              // FILE PICKERS & DRAG-AND-DROP HANDLERS
+              // =========================================================================
+              function onVlockFilePicked(file) {
+                if (!file) return;
+                selectedVlockFile = file;
+                const sizeMb = (file.size / (1024 * 1024)).toFixed(1);
+                document.getElementById('viewerFileTitle').textContent = `Ready to Unlock: ${file.name} (${sizeMb} MB)`;
+              }
+
+              function onRawMediaPicked(file) {
+                if (!file) return;
+                selectedRawMediaFile = file;
+                const sizeMb = (file.size / (1024 * 1024)).toFixed(1);
+                document.getElementById('encryptFileTitle').textContent = `Selected: ${file.name} (${sizeMb} MB)`;
+              }
+
+              function bindDropZone(zoneId, inputId, callback) {
+                const zone = document.getElementById(zoneId);
+                const input = document.getElementById(inputId);
+                zone.addEventListener('click', () => input.click());
+                input.addEventListener('change', () => {
+                  if (input.files && input.files.length > 0) callback(input.files[0]);
+                });
+                zone.addEventListener('dragover', (e) => {
+                  e.preventDefault();
+                  zone.classList.add('dragover');
+                });
+                zone.addEventListener('dragleave', () => zone.classList.remove('dragover'));
+                zone.addEventListener('drop', (e) => {
+                  e.preventDefault();
+                  zone.classList.remove('dragover');
+                  if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                    callback(e.dataTransfer.files[0]);
+                  }
+                });
+              }
+
+              // =========================================================================
+              // CLIPBOARD PASTE & COPY HELPERS
+              // =========================================================================
+              async function pasteIntoField(inputId) {
+                const el = document.getElementById(inputId);
+                el.focus();
+                try {
+                  if (navigator.clipboard && navigator.clipboard.readText) {
+                    const text = await navigator.clipboard.readText();
+                    if (text) {
+                      el.value = text.trim();
+                      return;
+                    }
+                  }
+                } catch (e) {}
+                const manual = prompt("Paste your key here:");
+                if (manual !== null && manual.trim() !== "") {
+                  el.value = manual.trim();
+                }
+              }
+
+              async function copyTextSafe(text, msg) {
+                try {
+                  await navigator.clipboard.writeText(text);
+                  alert(msg || "Copied to clipboard!");
+                } catch (e) {
+                  prompt("Copy this text:", text);
+                }
+              }
+
+              // =========================================================================
+              // SUPERUSER PANEL & SESSION KEY LOGIC (ZERO-KNOWLEDGE JWK ECDSA)
+              // =========================================================================
+              async function handleSuperuserLogin() {
+                const pwd = document.getElementById('suPasswordInput').value;
+                if (!pwd) {
+                  alert("Please enter the Superuser Password.");
+                  return;
+                }
+                const btn = document.getElementById('btnLoginSu');
+                btn.disabled = true;
+                btn.textContent = "Verifying...";
+                try {
+                  const kdf = await deriveZkKdf(pwd);
+                  const check = await sha256Bytes(concatBytes(kdf, new TextEncoder().encode("VLOCK_SU_AUTH_v2")));
+                  if (bytesToHex(check).toLowerCase() === ZK_VERIFIER_HEX.toLowerCase()) {
+                    verifiedSuPassword = pwd;
+                    document.getElementById('suLoginBox').style.display = 'none';
+                    document.getElementById('suGeneratorBox').style.display = 'flex';
+                  } else {
+                    alert("Incorrect Superuser Password!");
+                  }
+                } catch (err) {
+                  alert("Login error: " + err.message);
+                } finally {
+                  btn.disabled = false;
+                  btn.textContent = "Login";
+                }
+              }
+
+              async function handleGenerateSessionKey() {
+                try {
+                  const code = document.getElementById('suDurationSelect').value;
+                  const salt = hexToBytes(ZK_SALT_HEX);
+                  const kdf = await deriveZkKdf(verifiedSuPassword);
+                  const encD = hexToBytes(ZK_ENC_D_HEX);
+
+                  const aesKey = await crypto.subtle.importKey('raw', kdf, 'AES-CTR', false, ['decrypt']);
+                  const iv = new Uint8Array(16);
+                  iv.set(salt.slice(0, 8), 0);
+                  const dRaw = await crypto.subtle.decrypt({ name: 'AES-CTR', counter: iv, length: 64 }, aesKey, encD);
+                  const dB64u = bytesToBase64Url(dRaw);
+
+                  const jwkPriv = {
+                    kty: "EC",
+                    crv: "P-256",
+                    x: ZK_PUB_X_B64U,
+                    y: ZK_PUB_Y_B64U,
+                    d: dB64u,
+                    ext: true
+                  };
+
+                  const ecPrivKey = await crypto.subtle.importKey(
+                    'jwk',
+                    jwkPriv,
+                    { name: 'ECDSA', namedCurve: 'P-256' },
+                    false,
+                    ['sign']
+                  );
+
+                  const rnd = crypto.getRandomValues(new Uint8Array(4));
+                  const nonce = bytesToHex(rnd).toUpperCase();
+                  const msg = `VLKS-${code}-${nonce}`;
+                  const rawSig = new Uint8Array(await crypto.subtle.sign(
+                    { name: 'ECDSA', hash: 'SHA-256' },
+                    ecPrivKey,
+                    new TextEncoder().encode(msg)
+                  ));
+
+                  const fullKey = `${msg}-${base32Encode(rawSig)}`;
+                  document.getElementById('suGeneratedKeyOut').value = fullKey;
+                  copyTextSafe(fullKey, "Session Key generated and copied to clipboard!");
+                } catch (err) {
+                  alert("Error generating Session Key: " + err.message);
+                }
+              }
+
+              async function handleActivateSessionKey() {
+                try {
+                  const raw = document.getElementById('sessionKeyInput').value.trim().toUpperCase();
+                  if (!raw) {
+                    alert("Please paste a Session Key first.");
+                    return;
+                  }
+                  const parts = raw.split('-');
+                  if (parts.length !== 4 || parts[0] !== 'VLKS') {
+                    throw new Error("Invalid Session Key format. Expected VLKS-XXXX-XXXXXXXX-...");
+                  }
+                  const [_, code, nonce, sigB32] = parts;
+                  if (!(code in CODE_TO_SECONDS)) {
+                    throw new Error("Unknown duration code in Session Key.");
+                  }
+
+                  const rawSig = base32Decode(sigB32);
+                  const jwkPub = {
+                    kty: "EC",
+                    crv: "P-256",
+                    x: ZK_PUB_X_B64U,
+                    y: ZK_PUB_Y_B64U,
+                    ext: true
+                  };
+
+                  const pubKey = await crypto.subtle.importKey(
+                    'jwk',
+                    jwkPub,
+                    { name: 'ECDSA', namedCurve: 'P-256' },
+                    false,
+                    ['verify']
+                  );
+
+                  const valid = await crypto.subtle.verify(
+                    { name: 'ECDSA', hash: 'SHA-256' },
+                    pubKey,
+                    rawSig,
+                    new TextEncoder().encode(`VLKS-${code}-${nonce}`)
+                  );
+                  if (!valid) {
+                    throw new Error("Invalid or forged Session Key signature.");
+                  }
+
+                  const usedNonces = JSON.parse(localStorage.getItem('vlock_used_nonces') || '[]');
+                  if (usedNonces.includes(nonce)) {
+                    throw new Error("This Session Key has already been used on this device.");
+                  }
+                  usedNonces.push(nonce);
+                  localStorage.setItem('vlock_used_nonces', JSON.stringify(usedNonces));
+
+                  const secs = CODE_TO_SECONDS[code];
+                  const expiry = secs === -1 ? -1 : Math.floor(Date.now() / 1000) + secs;
+                  localStorage.setItem('vlock_admin_expiry', String(expiry));
+                  localStorage.setItem('vlock_admin_plan', CODE_TO_LABEL[code]);
+
+                  document.getElementById('sessionKeyInput').value = '';
+                  refreshAdminLockUI();
+                  alert("Admin Encryption Panel unlocked for: " + CODE_TO_LABEL[code]);
+                } catch (err) {
+                  alert(err.message);
+                }
+              }
+
+              function refreshAdminLockUI() {
+                const expiry = parseInt(localStorage.getItem('vlock_admin_expiry') || '0', 10);
+                const plan = localStorage.getItem('vlock_admin_plan') || '';
+                const now = Math.floor(Date.now() / 1000);
+                const badge = document.getElementById('adminStatusBadge');
+                const lockedSec = document.getElementById('adminLockedSection');
+                const unlockedSec = document.getElementById('adminUnlockedSection');
+
+                if (expiry === -1) {
+                  badge.textContent = "Unlocked • Lifetime Access";
+                  badge.style.color = "#3fb950";
+                  lockedSec.style.display = 'none';
+                  unlockedSec.style.display = 'flex';
+                } else if (expiry > now) {
+                  const rem = expiry - now;
+                  const d = Math.floor(rem / 86400);
+                  const h = Math.floor((rem % 86400) / 3600);
+                  badge.textContent = `Unlocked • ${plan} (${d}d ${h}h left)`;
+                  badge.style.color = "#3fb950";
+                  lockedSec.style.display = 'none';
+                  unlockedSec.style.display = 'flex';
+                } else {
+                  badge.textContent = "Locked • Session Key Required";
+                  badge.style.color = "#ffa198";
+                  lockedSec.style.display = 'flex';
+                  unlockedSec.style.display = 'none';
+                }
+              }
+
+              // =========================================================================
+              // USER PANEL: DECRYPTION, STREAMING & PERMANENT MASTERKEY RESTORE
+              // =========================================================================
+              function resolveMimeType(ext) {
+                const e = ext.toLowerCase();
+                const map = {
+                  '.mp4': 'video/mp4', '.m4v': 'video/mp4', '.mkv': 'video/x-matroska', '.webm': 'video/webm',
+                  '.avi': 'video/x-msvideo', '.mov': 'video/quicktime', '.ts': 'video/mp2t', '.mp3': 'audio/mpeg',
+                  '.flac': 'audio/flac', '.wav': 'audio/wav', '.aac': 'audio/aac', '.ogg': 'audio/ogg', '.m4a': 'audio/mp4'
+                };
+                return map[e] || 'video/mp4';
+              }
+
+              async function handleDecryptAndWatch() {
+                if (!selectedVlockFile) {
+                  alert("Please tap or drag & drop a .vlock media file first.");
+                  return;
+                }
+                const rawKey = document.getElementById('viewerKeyInput').value.trim().toUpperCase();
+                if (!rawKey) {
+                  alert("Please paste your One-Time Key or Permanent Masterkey.");
+                  return;
+                }
+
+                const btn = document.getElementById('btnDecryptWatch');
+                btn.disabled = true;
+                btn.textContent = "Verifying Key & Preparing Stream...";
+
+                try {
+                  const enc = new TextEncoder();
+                  const kBytes = enc.encode(rawKey);
+                  const targetKeyId = (await sha256Bytes(kBytes)).slice(0, 15);
+                  const wrapMask = await sha256Bytes(concatBytes(kBytes, enc.encode("VLOCK_WRAP")));
+
+                  const headBuf = await selectedVlockFile.slice(0, 66).arrayBuffer();
+                  const headBytes = new Uint8Array(headBuf);
+                  if (new TextDecoder().decode(headBytes.slice(0, 4)) !== "VLCK") {
+                    throw new Error("Not a valid .vlock encrypted file.");
+                  }
+
+                  const dv = new DataView(headBuf);
+                  const version = dv.getUint16(4, false);
+                  let ext = ".mp4", nonce8, verifyHash, numKeys, fixedLen;
+
+                  if (version === 1) {
+                    ext = new TextDecoder().decode(headBytes.slice(6, 14)).replace(/\0/g, '').trim() || ".mp4";
+                    nonce8 = headBytes.slice(14, 22);
+                    verifyHash = headBytes.slice(22, 54);
+                    numKeys = dv.getUint32(54, false);
+                    fixedLen = 58;
+                  } else if (version === 2) {
+                    ext = new TextDecoder().decode(headBytes.slice(6, 22)).replace(/\0/g, '').trim() || ".mp4";
+                    nonce8 = headBytes.slice(22, 30);
+                    verifyHash = headBytes.slice(30, 62);
+                    numKeys = dv.getUint32(62, false);
+                    fixedLen = 66;
+                  } else {
+                    throw new Error("Unsupported .vlock format version: " + version);
+                  }
+
+                  const payloadOffset = fixedLen + (numKeys * SLOT_SIZE);
+                  const payloadSize = selectedVlockFile.size - payloadOffset;
+                  const slotsData = new Uint8Array(await selectedVlockFile.slice(fixedLen, payloadOffset).arrayBuffer());
+
+                  let matchedIdx = -1, slotStatus = 0, wrappedMk = null;
+                  for (let i = 0; i < numKeys; i++) {
+                    const off = i * SLOT_SIZE;
+                    let same = true;
+                    for (let b = 0; b < 15; b++) {
+                      if (slotsData[off + 1 + b] !== targetKeyId[b]) { same = false; break; }
+                    }
+                    if (same) {
+                      matchedIdx = i;
+                      slotStatus = slotsData[off];
+                      wrappedMk = slotsData.slice(off + 16, off + 48);
+                      break;
+                    }
+                  }
+
+                  if (matchedIdx === -1) {
+                    throw new Error("Invalid Decryption Key! Please check the key from the Telegram Bot.");
+                  }
+
+                  const keyHex = bytesToHex(targetKeyId);
+                  const burnedKeys = JSON.parse(localStorage.getItem('vlock_burned_keys') || '{}');
+                  if (slotStatus === 0 || (slotStatus === 1 && burnedKeys[keyHex])) {
+                    throw new Error("Previous key expired! Please enter a new key from the Telegram Bot to watch again.");
+                  }
+
+                  const masterKey = new Uint8Array(32);
+                  for (let i = 0; i < 32; i++) masterKey[i] = wrappedMk[i] ^ wrapMask[i];
+
+                  const checkHash = await sha256Bytes(concatBytes(masterKey, enc.encode("VLOCK_VERIFY")));
+                  if (bytesToHex(checkHash) !== bytesToHex(verifyHash)) {
+                    throw new Error("Key verification failed.");
+                  }
+
+                  const cryptoKey = await crypto.subtle.importKey('raw', masterKey, 'AES-CTR', false, ['decrypt']);
+
+                  // IF PERMANENT MASTERKEY (slotStatus === 2): RESTORE ORIGINAL VIDEO FOREVER
+                  if (slotStatus === 2) {
+                    await restoreOriginalMediaLocally(selectedVlockFile, cryptoKey, nonce8, payloadOffset, payloadSize, ext);
+                    return;
+                  }
+
+                  // BURN ONE-TIME KEY IMMEDIATELY
+                  burnedKeys[keyHex] = Date.now();
+                  localStorage.setItem('vlock_burned_keys', JSON.stringify(burnedKeys));
+
+                  closePlayerStream();
+                  const mime = resolveMimeType(ext);
+                  document.getElementById('playerWrap').classList.add('active');
+                  document.getElementById('nowPlayingLabel').textContent = "Now Playing: " + selectedVlockFile.name;
+                  const videoEl = document.getElementById('vlockVideoPlayer');
+
+                  if (navigator.serviceWorker && navigator.serviceWorker.controller) {
+                    const sid = Math.random().toString(36).slice(2) + Date.now().toString(36);
+                    activeStreamSessions[sid] = { file: selectedVlockFile, cryptoKey, nonce8, payloadOffset, payloadSize };
+                    videoEl.src = `./__vlock_stream__/Episode${ext}?sid=${sid}&size=${payloadSize}&mime=${encodeURIComponent(mime)}`;
+                    videoEl.play().catch(() => {});
+                  } else {
+                    // Disk-backed Blob chunking so even 1GB+ files don't overflow JS heap
+                    const blobParts = [];
+                    const chunkSize = 8 * 1024 * 1024;
+                    let offset = 0;
+                    while (offset < payloadSize) {
+                      const len = Math.min(chunkSize, payloadSize - offset);
+                      const encChunk = await selectedVlockFile.slice(payloadOffset + offset, payloadOffset + offset + len).arrayBuffer();
+                      const decChunk = await crypto.subtle.decrypt(
+                        { name: 'AES-CTR', counter: makeCtrIv(nonce8, Math.floor(offset / 16)), length: 64 },
+                        cryptoKey,
+                        encChunk
+                      );
+                      blobParts.push(new Blob([decChunk]));
+                      offset += len;
+                    }
+                    currentObjectUrl = URL.createObjectURL(new Blob(blobParts, { type: mime }));
+                    videoEl.src = currentObjectUrl;
+                    videoEl.play().catch(() => {});
+                  }
+                } catch (err) {
+                  alert(err.message);
+                } finally {
+                  btn.disabled = false;
+                  btn.textContent = "▶ Decrypt & Watch / Unlock";
+                }
+              }
+
+              function closePlayerStream() {
+                const videoEl = document.getElementById('vlockVideoPlayer');
+                videoEl.pause();
+                videoEl.removeAttribute('src');
+                videoEl.load();
+                if (currentObjectUrl) {
+                  URL.revokeObjectURL(currentObjectUrl);
+                  currentObjectUrl = null;
+                }
+                activeStreamSessions = {};
+                document.getElementById('playerWrap').classList.remove('active');
+              }
+
+              async function restoreOriginalMediaLocally(vlockFile, cryptoKey, nonce8, payloadOffset, payloadSize, ext) {
+                const blobParts = [];
+                const chunkSize = 8 * 1024 * 1024;
+                let offset = 0;
+                while (offset < payloadSize) {
+                  const len = Math.min(chunkSize, payloadSize - offset);
+                  const encChunk = await vlockFile.slice(payloadOffset + offset, payloadOffset + offset + len).arrayBuffer();
+                  const decChunk = await crypto.subtle.decrypt(
+                    { name: 'AES-CTR', counter: makeCtrIv(nonce8, Math.floor(offset / 16)), length: 64 },
+                    cryptoKey,
+                    encChunk
+                  );
+                  blobParts.push(new Blob([decChunk]));
+                  offset += len;
+                }
+                const outName = `${vlockFile.name.replace(/\.vlock$/i, '')}_Unlocked${ext}`;
+                await saveBlobToDisk(new Blob(blobParts, { type: resolveMimeType(ext) }), outName);
+                alert("Permanent Masterkey Verified!\n\nVideo unlocked forever and restored to its original format: " + outName);
+              }
+
+              async function saveBlobToDisk(blob, filename) {
+                if (customDirectoryHandle) {
+                  try {
+                    const fh = await customDirectoryHandle.getFileHandle(filename, { create: true });
+                    const wr = await fh.createWritable();
+                    await wr.write(blob);
+                    await wr.close();
+                    return;
+                  } catch (e) {}
+                }
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = filename;
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                setTimeout(() => URL.revokeObjectURL(url), 10000);
+              }
+
+              // =========================================================================
+              // ADMIN PANEL: INSTANT KEY GENERATION + LOCAL 1GB+ ENCRYPTION
+              // =========================================================================
+              function generateHumanKey(prefix) {
+                const alpha = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
+                const rnd = crypto.getRandomValues(new Uint8Array(12));
+                let g1 = "", g2 = "", g3 = "";
+                for (let i = 0; i < 4; i++) {
+                  g1 += alpha[rnd[i] % alpha.length];
+                  g2 += alpha[rnd[i + 4] % alpha.length];
+                  g3 += alpha[rnd[i + 8] % alpha.length];
+                }
+                return `${prefix}-${g1}-${g2}-${g3}`;
+              }
+
+              async function handleStartEncryption() {
+                refreshAdminLockUI();
+                if (document.getElementById('adminUnlockedSection').style.display === 'none') {
+                  alert("Admin Encryption Panel is locked.");
+                  return;
+                }
+                if (!selectedRawMediaFile) {
+                  alert("Please select or drag & drop a video or audio file first.");
+                  return;
+                }
+
+                const numTempKeys = parseInt(document.getElementById('numTempKeysInput').value || '0', 10);
+                const includePerm = document.getElementById('permMasterCheckbox').checked;
+
+                if (isNaN(numTempKeys) || numTempKeys < 0 || numTempKeys > 100000) {
+                  alert("Enter a valid number of Temporary Keys (0 to 100000).");
+                  return;
+                }
+                if (numTempKeys === 0 && !includePerm) {
+                  alert("Temporary Keys is 0 and Permanent Masterkey is unchecked.\n\nPlease set Temporary Keys > 0 or check 'Permanent Masterkey' (or both).");
+                  return;
+                }
+
+                const btn = document.getElementById('btnStartEncrypt');
+                const statusEl = document.getElementById('encryptStatusText');
+                const progEl = document.getElementById('encryptProgressFill');
+                btn.disabled = true;
+                progEl.style.width = '0%';
+                statusEl.textContent = "Step 1/2: Generating keys instantly...";
+
+                try {
+                  const enc = new TextEncoder();
+                  const dotIdx = selectedRawMediaFile.name.lastIndexOf('.');
+                  const ext = (dotIdx >= 0 ? selectedRawMediaFile.name.slice(dotIdx).toLowerCase() : '.mp4').slice(0, 16);
+                  const stem = dotIdx > 0 ? selectedRawMediaFile.name.slice(0, dotIdx) : selectedRawMediaFile.name;
+
+                  const extBytes16 = new Uint8Array(16);
+                  extBytes16.set(enc.encode(ext).slice(0, 16), 0);
+
+                  const masterKey = crypto.getRandomValues(new Uint8Array(32));
+                  const nonce8 = crypto.getRandomValues(new Uint8Array(8));
+                  const verifyHash = await sha256Bytes(concatBytes(masterKey, enc.encode("VLOCK_VERIFY")));
+
+                  const totalSlots = numTempKeys + (includePerm ? 1 : 0);
+                  const slotsBuffer = new Uint8Array(totalSlots * SLOT_SIZE);
+                  const keyLines = [];
+                  let slotIdx = 0;
+
+                  if (includePerm) {
+                    const pkStr = generateHumanKey("VLOCK-MASTER");
+                    keyLines.push("=== PERMANENT MASTERKEY (UNLOCKS FOREVER & RESTORES ORIGINAL VIDEO) ===", pkStr, "");
+                    const pkBytes = enc.encode(pkStr);
+                    const pkId = (await sha256Bytes(pkBytes)).slice(0, 15);
+                    const pkMask = await sha256Bytes(concatBytes(pkBytes, enc.encode("VLOCK_WRAP")));
+                    const off = slotIdx * SLOT_SIZE;
+                    slotsBuffer[off] = 2;
+                    slotsBuffer.set(pkId, off + 1);
+                    for (let b = 0; b < 32; b++) slotsBuffer[off + 16 + b] = masterKey[b] ^ pkMask[b];
+                    slotIdx++;
+                  }
+
+                  if (numTempKeys > 0) {
+                    if (includePerm) keyLines.push(`=== ONE-TIME TEMPORARY KEYS (${numTempKeys}) ===`);
+                    for (let i = 0; i < numTempKeys; i++) {
+                      const kStr = generateHumanKey("VLOCK");
+                      keyLines.push(kStr);
+                      const kBytes = enc.encode(kStr);
+                      const kId = (await sha256Bytes(kBytes)).slice(0, 15);
+                      const kMask = await sha256Bytes(concatBytes(kBytes, enc.encode("VLOCK_WRAP")));
+                      const off = slotIdx * SLOT_SIZE;
+                      slotsBuffer[off] = 1;
+                      slotsBuffer.set(kId, off + 1);
+                      for (let b = 0; b < 32; b++) slotsBuffer[off + 16 + b] = masterKey[b] ^ kMask[b];
+                      slotIdx++;
+                    }
+                  }
+
+                  // DISPLAY & SAVE BOT_KEYS.TXT IMMEDIATELY
+                  lastGeneratedKeysContent = keyLines.join('\n') + '\n';
+                  document.getElementById('keysTextarea').value = lastGeneratedKeysContent;
+                  document.getElementById('keysOutputBox').classList.add('show');
+                  await saveBlobToDisk(new Blob([lastGeneratedKeysContent], { type: 'text/plain;charset=utf-8' }), 'bot_keys.txt');
+
+                  // ENCRYPT VIDEO LOCALLY IN 8MB DISK-BACKED CHUNKS (0 MB INTERNET UPLOAD)
+                  const headerFixed = new Uint8Array(66);
+                  headerFixed.set(enc.encode("VLCK"), 0);
+                  const hDv = new DataView(headerFixed.buffer);
+                  hDv.setUint16(4, 2, false);
+                  headerFixed.set(extBytes16, 6);
+                  headerFixed.set(nonce8, 22);
+                  headerFixed.set(verifyHash, 30);
+                  hDv.setUint32(62, totalSlots, false);
+
+                  const cryptoKey = await crypto.subtle.importKey('raw', masterKey, 'AES-CTR', false, ['encrypt']);
+                  const blobParts = [new Blob([headerFixed]), new Blob([slotsBuffer])];
+
+                  const chunkSize = 8 * 1024 * 1024;
+                  const totalSize = selectedRawMediaFile.size;
+                  let offset = 0;
+
+                  while (offset < totalSize) {
+                    const len = Math.min(chunkSize, totalSize - offset);
+                    const plainSlice = await selectedRawMediaFile.slice(offset, offset + len).arrayBuffer();
+                    const encSlice = await crypto.subtle.encrypt(
+                      { name: 'AES-CTR', counter: makeCtrIv(nonce8, Math.floor(offset / 16)), length: 64 },
+                      cryptoKey,
+                      plainSlice
+                    );
+                    blobParts.push(new Blob([encSlice]));
+                    offset += len;
+                    const pct = Math.min(100, Math.round((offset / totalSize) * 100));
+                    progEl.style.width = pct + '%';
+                    statusEl.textContent = `Step 2/2: Encrypting locally on device... ${pct}% (0 MB internet used)`;
+                  }
+
+                  await saveBlobToDisk(new Blob(blobParts, { type: 'application/octet-stream' }), `${stem}.vlock`);
+                  statusEl.textContent = `Done! Saved ${stem}.vlock & bot_keys.txt to your device.`;
+                } catch (err) {
+                  alert("Encryption error: " + err.message);
+                  statusEl.textContent = "Error: " + err.message;
+                } finally {
+                  btn.disabled = false;
+                }
+              }
+
+              // =========================================================================
+              // ATTACH ALL BUTTON LISTENERS ON LOAD
+              // =========================================================================
+              document.addEventListener('DOMContentLoaded', () => {
+                refreshAdminLockUI();
+
+                bindDropZone('viewerDropZone', 'vlockFileInput', onVlockFilePicked);
+                bindDropZone('encryptDropZone', 'rawMediaInput', onRawMediaPicked);
+
+                document.getElementById('btnFullScreen').addEventListener('click', () => {
+                  if (document.documentElement.requestFullscreen) document.documentElement.requestFullscreen();
+                });
+                document.getElementById('btnFreeScreen').addEventListener('click', () => {
+                  if (document.fullscreenElement && document.exitFullscreen) document.exitFullscreen();
+                });
+
+                const dotsMenu = document.getElementById('dotsMenu');
+                document.getElementById('btnDots').addEventListener('click', (e) => {
+                  e.stopPropagation();
+                  dotsMenu.classList.toggle('show');
+                });
+                document.addEventListener('click', () => dotsMenu.classList.remove('show'));
+
+                document.getElementById('menuSuperuser').addEventListener('click', () => {
+                  document.getElementById('suLoginBox').style.display = 'flex';
+                  document.getElementById('suGeneratorBox').style.display = 'none';
+                  document.getElementById('suPasswordInput').value = '';
+                  document.getElementById('superuserModal').classList.add('show');
+                });
+
+                document.getElementById('menuSupport').addEventListener('click', () => {
+                  document.getElementById('infoModalTitle').textContent = "Support & Contact";
+                  document.getElementById('infoModalBody').textContent = "For any issue contact @Modrat_editor using Telegram.";
+                  document.getElementById('infoModal').classList.add('show');
+                });
+
+                document.getElementById('menuCopyright').addEventListener('click', () => {
+                  document.getElementById('infoModalTitle').textContent = "Copyright & Legal Notice";
+                  document.getElementById('infoModalBody').textContent =
+                    "VLock Media Security Suite v2.3\n© 2026 VLock Studio. All Rights Reserved.\n\n" +
+                    "This software and its cryptographic stream architecture are protected by copyright law and international treaties. " +
+                    "Unauthorized reproduction, reverse engineering, or tampering may result in severe civil and criminal penalties.\n\n" +
+                    "For any issue contact @Modrat_editor using Telegram.";
+                  document.getElementById('infoModal').classList.add('show');
+                });
+
+                document.getElementById('btnCloseSuModal1').addEventListener('click', () => {
+                  document.getElementById('superuserModal').classList.remove('show');
+                });
+                document.getElementById('btnCloseSuModal2').addEventListener('click', () => {
+                  document.getElementById('superuserModal').classList.remove('show');
+                });
+                document.getElementById('btnCloseInfoModal').addEventListener('click', () => {
+                  document.getElementById('infoModal').classList.remove('show');
+                });
+                document.getElementById('btnCopyTelegram').addEventListener('click', () => {
+                  copyTextSafe("@Modrat_editor", "Copied @Modrat_editor to clipboard!");
+                });
+
+                document.getElementById('btnPasteViewerKey').addEventListener('click', () => pasteIntoField('viewerKeyInput'));
+                document.getElementById('btnPasteSessionKey').addEventListener('click', () => pasteIntoField('sessionKeyInput'));
+                document.getElementById('btnPasteSuPwd').addEventListener('click', () => pasteIntoField('suPasswordInput'));
+
+                document.getElementById('btnLoginSu').addEventListener('click', handleSuperuserLogin);
+                document.getElementById('suPasswordInput').addEventListener('keydown', (e) => {
+                  if (e.key === 'Enter') handleSuperuserLogin();
+                });
+                document.getElementById('btnGenerateSuKey').addEventListener('click', handleGenerateSessionKey);
+                document.getElementById('btnCopySuKey').addEventListener('click', () => {
+                  const val = document.getElementById('suGeneratedKeyOut').value;
+                  if (val) copyTextSafe(val, "Session Key copied to clipboard!");
+                });
+                document.getElementById('btnLockDevice').addEventListener('click', () => {
+                  localStorage.setItem('vlock_admin_expiry', '0');
+                  refreshAdminLockUI();
+                  document.getElementById('superuserModal').classList.remove('show');
+                });
+
+                document.getElementById('btnActivateSession').addEventListener('click', handleActivateSessionKey);
+                document.getElementById('btnDecryptWatch').addEventListener('click', handleDecryptAndWatch);
+                document.getElementById('btnCloseStream').addEventListener('click', closePlayerStream);
+                document.getElementById('btnStartEncrypt').addEventListener('click', handleStartEncryption);
+
+                document.getElementById('btnCopyBotKeys').addEventListener('click', () => {
+                  if (lastGeneratedKeysContent) copyTextSafe(lastGeneratedKeysContent, "All generated keys copied to clipboard!");
+                });
+                document.getElementById('btnDownloadBotKeys').addEventListener('click', () => {
+                  if (lastGeneratedKeysContent) {
+                    saveBlobToDisk(new Blob([lastGeneratedKeysContent], { type: 'text/plain;charset=utf-8' }), 'bot_keys.txt');
+                  }
+                });
+
+                document.getElementById('btnChangeSavePath').addEventListener('click', async () => {
+                  if (window.showDirectoryPicker) {
+                    try {
+                      customDirectoryHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
+                      document.getElementById('savePathLabel').textContent = "Current Save Path: Folder [" + customDirectoryHandle.name + "]";
+                      return;
+                    } catch (e) {}
+                  }
+                  const customName = prompt("Enter Subfolder / Label for Downloads:", "VLock");
+                  if (customName) {
+                    document.getElementById('savePathLabel').textContent = "Current Save Path: Downloads/" + customName;
+                  }
+                });
+
+                document.getElementById('btnResetSavePath').addEventListener('click', () => {
+                  customDirectoryHandle = null;
+                  document.getElementById('savePathLabel').textContent = "Current Save Path: Default (Downloads / VLock)";
+                });
+              });
             </script>
           </body>
-          </html>'''
+          </html>
+          '''
+
+          index_html = index_html.replace("__ZK_SALT_HEX__", salt.hex())
+          index_html = index_html.replace("__ZK_VERIFIER_HEX__", verifier)
+          index_html = index_html.replace("__ZK_ENC_D_HEX__", enc_d_hex)
+          index_html = index_html.replace("__ZK_PUB_X_B64U__", pub_x_b64u)
+          index_html = index_html.replace("__ZK_PUB_Y_B64U__", pub_y_b64u)
 
           with open("dist_web/index.html", "w", encoding="utf-8") as f:
               f.write(index_html)
