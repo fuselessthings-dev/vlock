@@ -771,10 +771,10 @@ jobs:
                 <button class="btn btn-dark" onclick="exitFullScreen()">❐ Free Screen</button>
                 <button class="btn btn-dots" onclick="toggleDotsMenu(event)">⋮</button>
                 <div class="dropdown-menu" id="dotsMenu">
-                  <button class="dropdown-item" onclick="openSuperuserModal()">Superuser Panel</button>
-                  <button class="dropdown-item" onclick="openSupportModal()">For any issue contact @Modrat_editor using Telegram</button>
-                  <button class="dropdown-item" onclick="openCopyrightModal()">Copyright & Legal Notice</button>
-                </div>
+         <button class="dropdown-item" onclick="document.getElementById('dotsMenu').classList.remove('show'); openSuperuserModal();">Superuser Panel</button>
+         <button class="dropdown-item" onclick="document.getElementById('dotsMenu').classList.remove('show'); openSupportModal();">For any issue contact @Modrat_editor using Telegram</button>
+         <button class="dropdown-item" onclick="document.getElementById('dotsMenu').classList.remove('show'); openCopyrightModal();">Copyright & Legal Notice</button>
+         </div>
               </div>
             </div>
             <div class="container">
