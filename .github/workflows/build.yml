@@ -73,7 +73,7 @@ jobs:
           enc_d_hex = (enc.update(d_raw32) + enc.finalize()).hex()
 
           # =====================================================================
-          # 2. SERVICE WORKER (LOCAL 64-BIT VIDEO STREAMING)
+          # 2. SERVICE WORKER (1 MB CHUNKED 64-BIT VIDEO STREAMING ENGINE)
           # =====================================================================
           sw_js = r'''self.addEventListener('install', (event) => {
             self.skipWaiting();
@@ -94,23 +94,24 @@ jobs:
               const rangeHeader = event.request.headers.get('Range');
 
               if (totalSize <= 0) {
-                return new Response('Empty stream', { status: 404 });
+                return new Response('Stream closed', { status: 404 });
               }
 
               let start = 0;
               let end = totalSize - 1;
-              let hasRange = false;
+              let isPartial = false;
 
               if (rangeHeader && rangeHeader.startsWith('bytes=')) {
-                hasRange = true;
+                isPartial = true;
                 const parts = rangeHeader.replace('bytes=', '').split('-');
                 if (parts[0]) start = parseInt(parts[0], 10);
                 if (parts[1]) end = Math.min(totalSize - 1, parseInt(parts[1], 10));
               }
 
-              const maxChunk = 4 * 1024 * 1024;
+              const maxChunk = 1024 * 1024;
               if (end - start + 1 > maxChunk) {
                 end = start + maxChunk - 1;
+                isPartial = true;
               }
 
               const clientsList = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
@@ -123,7 +124,7 @@ jobs:
                 try {
                   chunkBuffer = await new Promise((resolve, reject) => {
                     const channel = new MessageChannel();
-                    const timer = setTimeout(() => reject(new Error('Stream timeout')), 8000);
+                    const timer = setTimeout(() => reject(new Error('Stream timeout')), 10000);
                     channel.port1.onmessage = (e) => {
                       clearTimeout(timer);
                       if (e.data && e.data.ok && e.data.buffer) resolve(e.data.buffer);
@@ -136,7 +137,7 @@ jobs:
               }
 
               if (!chunkBuffer) {
-                return new Response('Stream not found', { status: 404 });
+                return new Response('Stream closed', { status: 404 });
               }
 
               const byteLen = chunkBuffer.byteLength;
@@ -144,13 +145,13 @@ jobs:
                 'Content-Type': mime,
                 'Accept-Ranges': 'bytes',
                 'Content-Length': String(byteLen),
-                'Cache-Control': 'no-store'
+                'Cache-Control': 'no-store, no-cache, must-revalidate',
+                'Content-Disposition': 'inline'
               });
-              if (hasRange) {
+              if (isPartial) {
                 headers.set('Content-Range', `bytes ${start}-${start + byteLen - 1}/${totalSize}`);
-                return new Response(chunkBuffer, { status: 206, headers });
               }
-              return new Response(chunkBuffer, { status: 200, headers });
+              return new Response(chunkBuffer, { status: isPartial ? 206 : 200, headers });
             })());
           });
           '''
@@ -158,13 +159,13 @@ jobs:
               f.write(sw_js)
 
           # =====================================================================
-          # 3. MAIN WEBSITE & SELF-OPENING HTML PLAYER TEMPLATE (INDEX.HTML)
+          # 3. MAIN WEBSITE (INDEX.HTML)
           # =====================================================================
           index_html = r'''<!DOCTYPE html>
           <html lang="en">
           <head>
             <meta charset="UTF-8" />
-            <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+            <meta name="viewport" content="width=device-width, initial-scale=1.0" />
             <meta name="theme-color" content="#161b22" />
             <title>VLock — User Decryption & Admin Encryption</title>
             <style>
@@ -179,6 +180,7 @@ jobs:
                 --red-banner: #42141b;
                 --red-border: #da3633;
                 --red-bright: #ff7b72;
+                --netflix-red: #e50914;
               }
               * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; }
               body { background: var(--bg-dark); color: #ffffff; min-height: 100vh; display: flex; flex-direction: column; }
@@ -274,76 +276,149 @@ jobs:
                 padding: 7px 10px; text-align: center;
               }
 
-              /* STREAMING PLATFORM VIDEO PLAYER + FULL SCREEN ENGINE */
-              .player-wrap {
-                display: none; flex-direction: column; gap: 10px; background: #000000; border-radius: 12px;
-                padding: 12px; border: 2px solid var(--green-border); margin-top: 6px; position: relative;
+              /* ========================================================= */
+              /* YOUTUBE / NETFLIX CUSTOM STREAMING PLAYER (NO DOWNLOAD!)  */
+              /* ========================================================= */
+              .cinema-wrapper {
+                display: none; position: relative; width: 100%; aspect-ratio: 16 / 9; max-height: 540px;
+                background: #000000; border-radius: 12px; overflow: hidden; border: 2px solid #2ea043;
+                margin-top: 6px; user-select: none; -webkit-user-select: none; box-shadow: 0 12px 34px rgba(0,0,0,0.85);
               }
-              .player-wrap.active { display: flex; }
-
-              /* Native & Fallback Fullscreen Styles */
-              .player-wrap:fullscreen, .player-wrap:-webkit-full-screen {
-                width: 100vw !important; height: 100vh !important; max-width: none !important;
-                background: #000000 !important; padding: 8px !important; border: none !important;
-                border-radius: 0 !important; display: flex !important; flex-direction: column !important;
-                justify-content: space-between !important; z-index: 999999 !important;
+              .cinema-wrapper.active { display: block; }
+              .cinema-wrapper:fullscreen, .cinema-wrapper:-webkit-full-screen {
+                width: 100vw !important; height: 100vh !important; max-height: none !important;
+                border: none !important; border-radius: 0 !important;
               }
-              .player-wrap.cinema-fullscreen {
+              .cinema-wrapper.css-fullscreen {
                 position: fixed !important; inset: 0 !important; width: 100vw !important; height: 100vh !important;
-                max-width: none !important; background: #000000 !important; padding: 8px !important;
-                border: none !important; border-radius: 0 !important; z-index: 999999 !important;
-                display: flex !important; flex-direction: column !important; justify-content: space-between !important;
+                max-height: none !important; z-index: 999999 !important; border: none !important; border-radius: 0 !important;
               }
-              /* Forced Mobile Landscape Rotation Mode */
-              .player-wrap.force-landscape {
+              .cinema-wrapper.landscape-rotated {
                 position: fixed !important; top: 50% !important; left: 50% !important;
-                width: 100vh !important; height: 100vw !important;
+                width: 100vh !important; height: 100vw !important; max-height: none !important;
                 transform: translate(-50%, -50%) rotate(90deg) !important;
-                background: #000000 !important; padding: 6px !important; border: none !important;
-                border-radius: 0 !important; z-index: 999999 !important;
-                display: flex !important; flex-direction: column !important; justify-content: space-between !important;
+                z-index: 999999 !important; border: none !important; border-radius: 0 !important;
               }
 
-              .video-stage {
-                position: relative; width: 100%; background: #000000; border-radius: 8px;
-                overflow: hidden; display: flex; align-items: center; justify-content: center;
-                min-height: 220px;
-              }
-              .player-wrap:fullscreen .video-stage,
-              .player-wrap:-webkit-full-screen .video-stage,
-              .player-wrap.cinema-fullscreen .video-stage,
-              .player-wrap.force-landscape .video-stage {
-                flex: 1; width: 100%; height: 100%; min-height: 0;
+              .cinema-video {
+                width: 100%; height: 100%; display: block; background: #000000; object-fit: contain;
+                outline: none; pointer-events: none;
               }
 
-              video {
-                width: 100%; max-height: 520px; min-height: 220px; border-radius: 6px;
-                background: #000000; outline: none; display: block; object-fit: contain;
-              }
-              .player-wrap:fullscreen video,
-              .player-wrap:-webkit-full-screen video,
-              .player-wrap.cinema-fullscreen video,
-              .player-wrap.force-landscape video {
-                width: 100% !important; height: 100% !important; max-height: 100% !important;
+              /* Interactive Touch / Click Surface */
+              .cinema-touch-layer {
+                position: absolute; inset: 0; z-index: 10; display: flex; align-items: center; justify-content: center;
+                cursor: pointer;
               }
 
-              /* Floating Corner Fullscreen Button on Video (Like YouTube / Netflix) */
-              .video-fs-fab {
-                position: absolute; bottom: 52px; right: 14px; background: rgba(13, 17, 23, 0.82);
-                border: 1.5px solid #3fb950; color: #ffffff; border-radius: 8px; padding: 7px 12px;
-                font-size: 12.5px; font-weight: 800; cursor: pointer; z-index: 30;
-                display: inline-flex; align-items: center; gap: 6px; box-shadow: 0 4px 14px rgba(0,0,0,0.75);
+              /* Center Play/Pause Pulse Icon & Spinner */
+              .center-play-indicator {
+                width: 68px; height: 68px; border-radius: 50%; background: rgba(0,0,0,0.68);
+                border: 2px solid rgba(255,255,255,0.85); display: flex; align-items: center; justify-content: center;
+                color: #ffffff; font-size: 28px; transition: opacity 0.2s, transform 0.2s; pointer-events: none;
               }
-              .video-fs-fab:hover { background: #2ea043; }
+              .cinema-wrapper.playing.hide-ui .center-play-indicator { opacity: 0; transform: scale(0.85); }
+              .cinema-wrapper.playing .center-play-indicator { opacity: 0; }
 
-              .player-controls-bar {
-                display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap;
-                background: #0d1117; padding: 8px 12px; border-radius: 8px; border: 1px solid #21262d;
+              .buffer-spinner {
+                position: absolute; width: 54px; height: 54px; border: 4px solid rgba(255,255,255,0.2);
+                border-top-color: var(--netflix-red); border-radius: 50%; animation: vspin 0.8s linear infinite;
+                display: none; z-index: 15; pointer-events: none;
               }
-              .speed-select {
-                background: #21262d; color: #ffffff; border: 1px solid #30363d; border-radius: 6px;
-                padding: 6px 8px; font-size: 12px; font-weight: 700; cursor: pointer;
+              .cinema-wrapper.buffering .buffer-spinner { display: block; }
+              @keyframes vspin { to { transform: rotate(360deg); } }
+
+              /* Double-Tap Seek Ripple Feedback */
+              .seek-ripple {
+                position: absolute; top: 50%; transform: translateY(-50%); background: rgba(0,0,0,0.72);
+                color: #ffffff; padding: 12px 18px; border-radius: 30px; font-size: 14px; font-weight: 800;
+                pointer-events: none; opacity: 0; transition: opacity 0.2s; z-index: 16;
               }
+              .seek-ripple.left { left: 12%; }
+              .seek-ripple.right { right: 12%; }
+              .seek-ripple.show { opacity: 1; }
+
+              /* Top Overlay Bar (Title + Protected Badge + Close) */
+              .cinema-topbar {
+                position: absolute; top: 0; left: 0; right: 0; z-index: 20;
+                padding: 12px 16px 28px; background: linear-gradient(to bottom, rgba(0,0,0,0.88), transparent);
+                display: flex; justify-content: space-between; align-items: center; gap: 10px;
+                transition: opacity 0.25s;
+              }
+              .cinema-title {
+                font-size: 13.5px; font-weight: 700; color: #ffffff; text-shadow: 0 1px 4px rgba(0,0,0,0.9);
+                white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+              }
+              .cinema-top-right { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+              .drm-badge {
+                background: rgba(20, 61, 41, 0.9); border: 1px solid #3fb950; color: #3fb950;
+                font-size: 10.5px; font-weight: 800; padding: 4px 8px; border-radius: 5px;
+              }
+
+              /* Bottom Controls Overlay (YouTube / Netflix Scrubber + Buttons) */
+              .cinema-bottombar {
+                position: absolute; bottom: 0; left: 0; right: 0; z-index: 20;
+                padding: 28px 14px 10px; background: linear-gradient(to top, rgba(0,0,0,0.92), rgba(0,0,0,0.45), transparent);
+                display: flex; flex-direction: column; gap: 8px; transition: opacity 0.25s;
+              }
+              .cinema-wrapper.playing.hide-ui .cinema-topbar,
+              .cinema-wrapper.playing.hide-ui .cinema-bottombar {
+                opacity: 0; pointer-events: none;
+              }
+              .cinema-wrapper.playing.hide-ui .cinema-touch-layer { cursor: none; }
+
+              /* Timeline Scrubber */
+              .scrubber-container {
+                width: 100%; height: 16px; display: flex; align-items: center; cursor: pointer; position: relative;
+              }
+              .scrubber-track {
+                width: 100%; height: 5px; background: rgba(255,255,255,0.28); border-radius: 3px;
+                position: relative; overflow: visible; transition: height 0.12s;
+              }
+              .scrubber-container:hover .scrubber-track { height: 7px; }
+              .scrubber-buffered {
+                position: absolute; top: 0; left: 0; bottom: 0; width: 0%;
+                background: rgba(255,255,255,0.45); border-radius: 3px; pointer-events: none;
+              }
+              .scrubber-watched {
+                position: absolute; top: 0; left: 0; bottom: 0; width: 0%;
+                background: var(--netflix-red); border-radius: 3px; pointer-events: none;
+              }
+              .scrubber-thumb {
+                position: absolute; top: 50%; left: 0%; width: 13px; height: 13px; border-radius: 50%;
+                background: var(--netflix-red); transform: translate(-50%, -50%); box-shadow: 0 0 6px rgba(0,0,0,0.8);
+                pointer-events: none;
+              }
+
+              .controls-row {
+                display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: nowrap;
+              }
+              .ctrl-group { display: flex; align-items: center; gap: 6px; }
+
+              .ctrl-btn {
+                background: none; border: none; color: #ffffff; cursor: pointer; padding: 6px 8px;
+                border-radius: 6px; display: inline-flex; align-items: center; justify-content: center;
+                font-size: 13px; font-weight: 700; transition: background 0.15s, transform 0.1s;
+              }
+              .ctrl-btn:hover { background: rgba(255,255,255,0.16); }
+              .ctrl-btn:active { transform: scale(0.94); }
+              .ctrl-btn svg { width: 22px; height: 22px; fill: currentColor; }
+
+              .time-display {
+                font-family: Consolas, monospace; font-size: 12px; font-weight: 700; color: #e6edf3;
+                margin-left: 4px; white-space: nowrap;
+              }
+
+              .vol-slider {
+                width: 64px; accent-color: var(--netflix-red); cursor: pointer; height: 4px;
+              }
+              @media (max-width: 520px) { .vol-slider { display: none; } }
+
+              .speed-pill {
+                background: rgba(255,255,255,0.14); color: #ffffff; border: 1px solid rgba(255,255,255,0.28);
+                border-radius: 6px; padding: 4px 7px; font-size: 11.5px; font-weight: 700; cursor: pointer; outline: none;
+              }
+              .speed-pill option { background: #161b22; color: #ffffff; }
 
               .progress-bar { width: 100%; height: 10px; background: #140507; border-radius: 5px; overflow: hidden; border: 1px solid #42141b; }
               .progress-fill { height: 100%; width: 0%; background: var(--red-bright); transition: width 0.1s; }
@@ -436,7 +511,7 @@ jobs:
               <div class="top-actions">
                 <button type="button" class="btn btn-purple" id="btnScrollTutorial">📖 How to Use (Tutorial)</button>
                 <button type="button" class="btn btn-blue" id="btnFullScreen">⛶ Full Screen</button>
-                <button type="button" class="btn btn-dark" id="btnFreeScreen">❐ Exit Full Screen</button>
+                <button type="button" class="btn btn-dark" id="btnFreeScreen">❐ Free Screen</button>
                 <button type="button" class="btn btn-dots" id="btnDots" title="Menu">⋮</button>
                 <div class="dropdown-menu" id="dotsMenu">
                   <button type="button" class="dropdown-item" id="menuSuperuser">Superuser Panel</button>
@@ -458,7 +533,7 @@ jobs:
                   <small>FREE FOREVER • ZERO DATA UPLOAD</small>
                 </div>
 
-                <input type="file" id="vlockFileInput" accept=".html,.htm,*/*" style="display:none" />
+                <input type="file" id="vlockFileInput" accept=".html,.htm,.vlock,*/*" style="display:none" />
                 <div class="nle-dropzone" id="viewerDropZone">
                   <svg class="nle-icon" viewBox="0 0 52 48" fill="none">
                     <path d="M6 14 V6 H14 M38 6 H46 V14 M6 34 V42 H14 M38 42 H46 V34" stroke="#3fb950" stroke-width="2.5" stroke-linecap="round"/>
@@ -467,7 +542,7 @@ jobs:
                   </svg>
                   <div class="nle-text">
                     <h3 id="viewerFileTitle">Tap or Drag & Drop Encrypted Video (.html) Here</h3>
-                    <p>Or simply click the downloaded .html video file directly on your phone/PC to auto-open & play!</p>
+                    <p>Supports all video & audio formats • Instant local streaming (0 MB internet upload)</p>
                   </div>
                 </div>
 
@@ -480,41 +555,84 @@ jobs:
                   ▶ Decrypt & Watch / Unlock
                 </button>
 
-                <!-- BUILT-IN STREAMING PLATFORM CINEMA PLAYER -->
-                <div class="player-wrap" id="playerWrap">
-                  <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
-                    <span id="nowPlayingLabel" style="font-size:12.5px;color:#3fb950;font-weight:700;">Playing Decrypted Video</span>
-                    <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
-                      <button type="button" class="btn btn-purple" id="btnRotateLandscape" style="padding:5px 10px;font-size:11.5px;">🔄 Rotate Landscape</button>
-                      <button type="button" class="btn btn-blue" id="btnPlayerFullScreenTop" style="padding:5px 11px;font-size:11.5px;">⛶ Full Screen</button>
-                      <button type="button" class="btn btn-dark" id="btnCloseStream" style="padding:5px 10px;font-size:11.5px;">✕ Close</button>
+                <!-- ======================================================= -->
+                <!-- YOUTUBE / NETFLIX STYLE PROTECTED CINEMA PLAYER         -->
+                <!-- ======================================================= -->
+                <div class="cinema-wrapper" id="playerWrap" oncontextmenu="return false;">
+                  <video
+                    id="vlockVideoPlayer"
+                    class="cinema-video"
+                    playsinline
+                    webkit-playsinline
+                    controlsList="nodownload noplaybackrate"
+                    disablePictureInPicture
+                    oncontextmenu="return false;"
+                  ></video>
+
+                  <div class="buffer-spinner" id="bufferSpinner"></div>
+                  <div class="seek-ripple left" id="rippleLeft">⏪ -10s</div>
+                  <div class="seek-ripple right" id="rippleRight">+10s ⏩</div>
+
+                  <!-- Click / Double-Tap Surface -->
+                  <div class="cinema-touch-layer" id="cinemaTouchLayer">
+                    <div class="center-play-indicator" id="centerPlayIcon">▶</div>
+                  </div>
+
+                  <!-- Top Gradient Bar -->
+                  <div class="cinema-topbar">
+                    <span class="cinema-title" id="nowPlayingLabel">Now Playing</span>
+                    <div class="cinema-top-right">
+                      <span class="drm-badge">🔒 Protected • No Download</span>
+                      <button type="button" class="btn btn-dark" id="btnCloseStream" style="padding:4px 10px;font-size:11px;background:rgba(33,38,45,0.85);">✕ Close</button>
                     </div>
                   </div>
 
-                  <div class="video-stage" id="videoStage">
-                    <video id="vlockVideoPlayer" controls playsinline webkit-playsinline preload="metadata"></video>
-                    <button type="button" class="video-fs-fab" id="btnVideoOverlayFs" title="Toggle Full Screen">
-                      ⛶ Full Screen
-                    </button>
-                  </div>
-
-                  <div class="player-controls-bar">
-                    <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
-                      <button type="button" class="btn btn-dark" id="btnSeekBack" style="padding:6px 10px;font-size:12px;">⏪ -10s</button>
-                      <button type="button" class="btn btn-dark" id="btnSeekForward" style="padding:6px 10px;font-size:12px;">⏩ +10s</button>
-                      <select id="playbackSpeedSelect" class="speed-select" title="Playback Speed">
-                        <option value="0.5">0.5x Speed</option>
-                        <option value="0.75">0.75x Speed</option>
-                        <option value="1" selected>1.0x Normal</option>
-                        <option value="1.25">1.25x Speed</option>
-                        <option value="1.5">1.5x Speed</option>
-                        <option value="2">2.0x Speed</option>
-                      </select>
+                  <!-- Bottom YouTube / Netflix Control Bar -->
+                  <div class="cinema-bottombar" id="cinemaBottomBar">
+                    <!-- Timeline Scrubber -->
+                    <div class="scrubber-container" id="scrubberContainer">
+                      <div class="scrubber-track">
+                        <div class="scrubber-buffered" id="scrubberBuffered"></div>
+                        <div class="scrubber-watched" id="scrubberWatched"></div>
+                        <div class="scrubber-thumb" id="scrubberThumb"></div>
+                      </div>
                     </div>
-                    <div style="display:flex;gap:6px;align-items:center;">
-                      <button type="button" class="btn btn-green" id="btnPlayerFullScreenBottom" style="padding:7px 14px;font-size:12.5px;">
-                        ⛶ Full Screen Cinema
-                      </button>
+
+                    <!-- Controls Row -->
+                    <div class="controls-row">
+                      <div class="ctrl-group">
+                        <button type="button" class="ctrl-btn" id="btnPlayPause" title="Play / Pause">
+                          <svg id="svgPlayIcon" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+                        </button>
+                        <button type="button" class="ctrl-btn" id="btnSeekBack" title="Rewind 10s">
+                          <svg viewBox="0 0 24 24"><path d="M11 18V6l-8.5 6 8.5 6zm.5-6l8.5 6V6l-8.5 6z"/></svg>
+                        </button>
+                        <button type="button" class="ctrl-btn" id="btnSeekForward" title="Forward 10s">
+                          <svg viewBox="0 0 24 24"><path d="M4 18l8.5-6L4 6v12zm9-12v12l8.5-6L13 6z"/></svg>
+                        </button>
+                        <button type="button" class="ctrl-btn" id="btnMuteToggle" title="Mute / Unmute">
+                          <svg id="svgVolIcon" viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02z"/></svg>
+                        </button>
+                        <input type="range" class="vol-slider" id="volSlider" min="0" max="1" step="0.05" value="1" />
+                        <span class="time-display" id="timeDisplay">00:00 / 00:00</span>
+                      </div>
+
+                      <div class="ctrl-group">
+                        <select id="playbackSpeedSelect" class="speed-pill" title="Playback Speed">
+                          <option value="0.5">0.5x</option>
+                          <option value="0.75">0.75x</option>
+                          <option value="1" selected>1x</option>
+                          <option value="1.25">1.25x</option>
+                          <option value="1.5">1.5x</option>
+                          <option value="2">2x</option>
+                        </select>
+                        <button type="button" class="ctrl-btn" id="btnRotateLandscape" title="Rotate Landscape (Mobile)">
+                          🔄
+                        </button>
+                        <button type="button" class="ctrl-btn" id="btnCinemaFullScreen" title="Full Screen">
+                          <svg viewBox="0 0 24 24"><path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/></svg>
+                        </button>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -523,7 +641,7 @@ jobs:
               <!-- ======================================================= -->
               <!-- PANEL 2: RED ADMIN — ENCRYPTION PANEL                   -->
               <!-- ======================================================= -->
-              <div class="card-red" id="adminEncryptionCard">
+              <div class="card-red">
                 <div class="banner-red">
                   <span>ADMIN &nbsp;•&nbsp; Encryption Panel</span>
                   <small id="adminStatusBadge">Locked • Session Key Required</small>
@@ -554,7 +672,7 @@ jobs:
                     </svg>
                     <div class="nle-text">
                       <h3 id="encryptFileTitle">1. Tap or Drag & Drop Video or Audio File Here</h3>
-                      <p>Outputs universal self-opening .html encrypted video (0 MB internet upload • Works on all devices)</p>
+                      <p>Fast binary encryption into universal .html format (0 MB internet upload • Supports 1 GB–50 GB+ files)</p>
                     </div>
                   </div>
 
@@ -628,26 +746,26 @@ jobs:
                         <rect x="151" y="42" width="28" height="24" rx="4" fill="#143d29" stroke="#3fb950" stroke-width="2"/>
                         <path d="M157 42 V35 A8 8 0 0 1 173 35 V42" stroke="#3fb950" stroke-width="2"/>
                         <polygon points="162,49 162,59 171,54" fill="#ffffff"/>
-                        <text x="165" y="78" fill="#3fb950" font-size="9" font-weight="bold" text-anchor="middle">Encrypted .html</text>
+                        <text x="165" y="78" fill="#3fb950" font-size="9" font-weight="bold" text-anchor="middle">.html Video</text>
                       </svg>
                     </div>
-                    <h4>1. Download the Encrypted .html Video</h4>
+                    <h4>1. Download the .html Video</h4>
                     <p>Download the encrypted <b>.html</b> video file from our Telegram channel onto your phone or PC, and copy your <b>One-Time Key</b> from the Telegram Bot.</p>
                   </div>
 
                   <div class="step-card">
-                    <span class="step-badge badge-green">STEP 2 • CLICK TO OPEN</span>
+                    <span class="step-badge badge-green">STEP 2 • CLICK FILE</span>
                     <div class="step-visual">
                       <svg width="210" height="100" viewBox="0 0 210 100" fill="none">
-                        <rect x="15" y="14" width="180" height="72" rx="10" fill="#071710" stroke="#3fb950" stroke-width="2"/>
+                        <rect x="15" y="14" width="180" height="72" rx="10" fill="#071710" stroke="#3fb950" stroke-width="2" stroke-dasharray="6 4"/>
                         <rect x="35" y="32" width="36" height="32" rx="4" stroke="#3fb950" stroke-width="2"/>
-                        <polygon points="49,42 49,54 60,48" fill="#ffffff"/>
+                        <path d="M53 41 V55 M46 48 H60" stroke="#ffffff" stroke-width="2.5" stroke-linecap="round"/>
                         <text x="84" y="46" fill="#ffffff" font-size="11" font-weight="bold">Click .html Video</text>
-                        <text x="84" y="62" fill="#3fb950" font-size="9">Auto-Asks for Key!</text>
+                        <text x="84" y="62" fill="#3fb950" font-size="9">Opens Website & Key Box</text>
                       </svg>
                     </div>
-                    <h4>2. Click File to Auto-Open</h4>
-                    <p>Click the downloaded <b>.html</b> video file and open it in your browser. It loads in 0.1s with the video ready and immediately asks for your key!</p>
+                    <h4>2. Click Video to Open Website</h4>
+                    <p>Click the <b>.html</b> video file to automatically open VLock Online with the <b>Enter Decryption Key</b> popup ready on screen!</p>
                   </div>
 
                   <div class="step-card">
@@ -663,8 +781,8 @@ jobs:
                         <text x="115" y="72" fill="#ffffff" font-size="11" font-weight="bold" text-anchor="middle">Decrypt & Watch</text>
                       </svg>
                     </div>
-                    <h4>3. Paste Key & Watch Full Screen</h4>
-                    <p>Tap <b>Paste Key</b> and click <b>Decrypt & Watch</b>. Use the built-in <b>⛶ Full Screen</b> and <b>🔄 Rotate Landscape</b> buttons to watch comfortably!</p>
+                    <h4>3. Paste Key & Stream</h4>
+                    <p>Click <b>Paste Key</b> and tap <b>Decrypt & Watch</b>. The video streams instantaneously in the protected YouTube/Netflix player!</p>
                   </div>
                 </div>
 
@@ -707,14 +825,14 @@ jobs:
                       <svg width="210" height="100" viewBox="0 0 210 100" fill="none">
                         <rect x="18" y="18" width="80" height="64" rx="8" fill="#140507" stroke="#f85149" stroke-width="2"/>
                         <text x="58" y="46" fill="#ff7b72" font-size="10" font-weight="bold" text-anchor="middle">Video.html</text>
-                        <text x="58" y="62" fill="#8b949e" font-size="8" text-anchor="middle">Self-Opening File</text>
+                        <text x="58" y="62" fill="#8b949e" font-size="8" text-anchor="middle">Encrypted File</text>
                         <rect x="112" y="18" width="80" height="64" rx="8" fill="#0b2419" stroke="#3fb950" stroke-width="2"/>
                         <text x="152" y="46" fill="#3fb950" font-size="10" font-weight="bold" text-anchor="middle">bot_keys.txt</text>
                         <text x="152" y="62" fill="#8b949e" font-size="8" text-anchor="middle">Paste in Bot</text>
                       </svg>
                     </div>
                     <h4>3. Save .html Video & bot_keys.txt</h4>
-                    <p>Tap <b>Encrypt Media & Generate Keys</b>. Your browser encrypts the video locally (0 MB upload) and saves both the self-opening <b>.html</b> file and <b>bot_keys.txt</b>!</p>
+                    <p>Tap <b>Encrypt Media & Generate Keys</b>. Your browser encrypts the video at native binary speed (0 MB upload) and saves both <b>Video.html</b> and <b>bot_keys.txt</b>!</p>
                   </div>
                 </div>
 
@@ -774,14 +892,14 @@ jobs:
               For any issue contact <a href="https://t.me/Modrat_editor" target="_blank" rel="noopener">@Modrat_editor</a> using Telegram.
             </div>
 
-            <!-- INSTANT DECRYPTION KEY POPUP MODAL (AUTO-OPENS IMMEDIATELY ON .HTML CLICK) -->
+            <!-- INSTANT DECRYPTION KEY MODAL (OPENS AUTOMATICALLY ON REDIRECT OR FILE PICK) -->
             <div class="modal-backdrop" id="instantKeyModal">
               <div class="modal" style="border:2px solid #2ea043;background:#0b2419;">
                 <div style="display:flex;justify-content:space-between;align-items:center;">
                   <h2 style="color:#3fb950;">🔑 Enter Decryption Key</h2>
                   <button type="button" class="btn btn-dark" id="btnCloseInstantKeyModal" style="padding:4px 10px;font-size:11px;">✕</button>
                 </div>
-                <p id="instantKeyModalFileLabel" style="color:#ffffff;font-weight:700;font-size:13px;">Video Loaded & Ready to Play</p>
+                <p id="instantKeyModalFileLabel" style="color:#ffffff;font-weight:700;font-size:13px;">Paste your key below to unlock and play immediately:</p>
                 <div class="input-row">
                   <input type="text" id="modalViewerKeyInput" class="input-box" placeholder="Paste Key Here (VLOCK-...)" />
                   <button type="button" class="btn btn-dark" id="btnModalPasteKey" style="background:#1b4332;border-color:#2ea043;color:#fff">Paste Key</button>
@@ -855,16 +973,14 @@ jobs:
               const CODE_TO_LABEL = { "1D": "1 Day", "1W": "1 Week", "1M": "1 Month", "1Y": "1 Year", "LT": "Lifetime" };
 
               let selectedVlockFile = null;
-              let hasEmbeddedDomChunks = false;
-              let embeddedFileName = "";
-              let embeddedTotalBytes = 0;
-
               let selectedRawMediaFile = null;
               let customDirectoryHandle = null;
               let lastGeneratedKeysContent = "";
               let verifiedSuPassword = "";
               let activeStreamSessions = {};
               let currentObjectUrl = null;
+              let autoPlayPendingAfterPick = false;
+              let uiHideTimer = null;
 
               function hexToBytes(hex) {
                 const out = new Uint8Array(hex.length / 2);
@@ -890,172 +1006,8 @@ jobs:
                 return out;
               }
 
-              // =========================================================================
-              // FAST SHA-256 & PRE-ALLOCATED XTIME AES-256-CTR (WEBCRYPTO + FALLBACK)
-              // =========================================================================
-              const SHA256_K = new Uint32Array([
-                0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
-                0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
-                0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
-                0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
-                0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
-                0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
-                0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
-                0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2
-              ]);
-
-              function sha256PureJs(msgBytes) {
-                const ml = msgBytes.length;
-                const bitLenHi = Math.floor((ml * 8) / 4294967296);
-                const bitLenLo = (ml * 8) >>> 0;
-                const padLen = ((ml + 9 + 63) & ~63);
-                const buf = new Uint8Array(padLen);
-                buf.set(msgBytes, 0);
-                buf[ml] = 0x80;
-                const dv = new DataView(buf.buffer);
-                dv.setUint32(padLen - 8, bitLenHi, false);
-                dv.setUint32(padLen - 4, bitLenLo, false);
-
-                let h0 = 0x6a09e667, h1 = 0xbb67ae85, h2 = 0x3c6ef372, h3 = 0xa54ff53a;
-                let h4 = 0x510e527f, h5 = 0x9b05688c, h6 = 0x1f83d9ab, h7 = 0x5be0cd19;
-                const w = new Uint32Array(64);
-
-                for (let off = 0; off < padLen; off += 64) {
-                  for (let i = 0; i < 16; i++) w[i] = dv.getUint32(off + i * 4, false);
-                  for (let i = 16; i < 64; i++) {
-                    const v0 = w[i - 15], v1 = w[i - 2];
-                    const s0 = ((v0 >>> 7) | (v0 << 25)) ^ ((v0 >>> 18) | (v0 << 14)) ^ (v0 >>> 3);
-                    const s1 = ((v1 >>> 17) | (v1 << 15)) ^ ((v1 >>> 19) | (v1 << 13)) ^ (v1 >>> 10);
-                    w[i] = (w[i - 16] + s0 + w[i - 7] + s1) >>> 0;
-                  }
-                  let a = h0, b = h1, c = h2, d = h3, e = h4, f = h5, g = h6, h = h7;
-                  for (let i = 0; i < 64; i++) {
-                    const S1 = ((e >>> 6) | (e << 26)) ^ ((e >>> 11) | (e << 21)) ^ ((e >>> 25) | (e << 7));
-                    const ch = (e & f) ^ (~e & g);
-                    const t1 = (h + S1 + ch + SHA256_K[i] + w[i]) >>> 0;
-                    const S0 = ((a >>> 2) | (a << 30)) ^ ((a >>> 13) | (a << 19)) ^ ((a >>> 22) | (a << 10));
-                    const maj = (a & b) ^ (a & c) ^ (b & c);
-                    const t2 = (S0 + maj) >>> 0;
-                    h = g; g = f; f = e; e = (d + t1) >>> 0;
-                    d = c; c = b; b = a; a = (t1 + t2) >>> 0;
-                  }
-                  h0 = (h0 + a) >>> 0; h1 = (h1 + b) >>> 0; h2 = (h2 + c) >>> 0; h3 = (h3 + d) >>> 0;
-                  h4 = (h4 + e) >>> 0; h5 = (h5 + f) >>> 0; h6 = (h6 + g) >>> 0; h7 = (h7 + h) >>> 0;
-                }
-                const out = new Uint8Array(32);
-                const odv = new DataView(out.buffer);
-                [h0, h1, h2, h3, h4, h5, h6, h7].forEach((v, i) => odv.setUint32(i * 4, v, false));
-                return out;
-              }
-
               async function sha256Bytes(data) {
-                if (window.crypto && window.crypto.subtle) {
-                  try {
-                    return new Uint8Array(await window.crypto.subtle.digest('SHA-256', data));
-                  } catch (e) {}
-                }
-                return sha256PureJs(data instanceof Uint8Array ? data : new Uint8Array(data));
-              }
-
-              const AES_SBOX = new Uint8Array(256);
-              const AES_XTIME = new Uint8Array(256);
-              const AES_RCON = new Uint8Array([0x00,0x01,0x02,0x04,0x08,0x10,0x20,0x40,0x80,0x1b,0x36]);
-              (function initAesTables() {
-                const p = new Uint8Array(256), q = new Uint8Array(256);
-                let x = 1;
-                for (let i = 0; i < 255; i++) {
-                  p[i] = x; q[x] = i;
-                  x = (x ^ (x << 1) ^ ((x & 0x80) ? 0x11b : 0)) & 0xff;
-                }
-                AES_SBOX[0] = 0x63;
-                for (let i = 1; i < 256; i++) {
-                  let y = p[255 - q[i]];
-                  let s = y;
-                  for (let r = 0; r < 4; r++) {
-                    y = ((y << 1) | (y >>> 7)) & 0xff;
-                    s ^= y;
-                  }
-                  AES_SBOX[i] = (s ^ 0x63) & 0xff;
-                }
-                for (let i = 0; i < 256; i++) {
-                  AES_XTIME[i] = ((i << 1) ^ ((i & 0x80) ? 0x11b : 0)) & 0xff;
-                }
-              })();
-
-              function aes256ExpandKey(key32) {
-                const w = new Uint8Array(240);
-                w.set(key32, 0);
-                let t0 = 0, t1 = 0, t2 = 0, t3 = 0, rconIdx = 1;
-                for (let i = 32; i < 240; i += 4) {
-                  t0 = w[i - 4]; t1 = w[i - 3]; t2 = w[i - 2]; t3 = w[i - 1];
-                  if ((i & 31) === 0) {
-                    const tmp = t0;
-                    t0 = AES_SBOX[t1] ^ AES_RCON[rconIdx++];
-                    t1 = AES_SBOX[t2];
-                    t2 = AES_SBOX[t3];
-                    t3 = AES_SBOX[tmp];
-                  } else if ((i & 31) === 16) {
-                    t0 = AES_SBOX[t0]; t1 = AES_SBOX[t1]; t2 = AES_SBOX[t2]; t3 = AES_SBOX[t3];
-                  }
-                  w[i] = w[i - 32] ^ t0;
-                  w[i + 1] = w[i - 31] ^ t1;
-                  w[i + 2] = w[i - 30] ^ t2;
-                  w[i + 3] = w[i - 29] ^ t3;
-                }
-                return w;
-              }
-
-              // Zero-allocation fast AES-256-CTR loop
-              function aes256CtrProcessFast(masterKey32, iv16, inputBuf) {
-                const rk = aes256ExpandKey(masterKey32);
-                const src = inputBuf instanceof Uint8Array ? inputBuf : new Uint8Array(inputBuf);
-                const len = src.length;
-                const out = new Uint8Array(len);
-                const ctr = new Uint8Array(iv16);
-                const s = new Uint8Array(16);
-                const t = new Uint8Array(16);
-                const ks = new Uint8Array(16);
-
-                for (let off = 0; off < len; off += 16) {
-                  for (let i = 0; i < 16; i++) s[i] = ctr[i] ^ rk[i];
-                  for (let round = 1; round <= 14; round++) {
-                    const roff = round << 4;
-                    t[0] = AES_SBOX[s[0]]; t[1] = AES_SBOX[s[5]]; t[2] = AES_SBOX[s[10]]; t[3] = AES_SBOX[s[15]];
-                    t[4] = AES_SBOX[s[4]]; t[5] = AES_SBOX[s[9]]; t[6] = AES_SBOX[s[14]]; t[7] = AES_SBOX[s[3]];
-                    t[8] = AES_SBOX[s[8]]; t[9] = AES_SBOX[s[13]]; t[10] = AES_SBOX[s[2]]; t[11] = AES_SBOX[s[7]];
-                    t[12] = AES_SBOX[s[12]]; t[13] = AES_SBOX[s[1]]; t[14] = AES_SBOX[s[6]]; t[15] = AES_SBOX[s[11]];
-                    if (round < 14) {
-                      for (let c = 0; c < 16; c += 4) {
-                        const a0 = t[c], a1 = t[c + 1], a2 = t[c + 2], a3 = t[c + 3];
-                        const x0 = AES_XTIME[a0], x1 = AES_XTIME[a1], x2 = AES_XTIME[a2], x3 = AES_XTIME[a3];
-                        s[c] = x0 ^ x1 ^ a1 ^ a2 ^ a3 ^ rk[roff + c];
-                        s[c + 1] = a0 ^ x1 ^ x2 ^ a2 ^ a3 ^ rk[roff + c + 1];
-                        s[c + 2] = a0 ^ a1 ^ x2 ^ x3 ^ a3 ^ rk[roff + c + 2];
-                        s[c + 3] = x0 ^ a0 ^ a1 ^ a2 ^ x3 ^ rk[roff + c + 3];
-                      }
-                    } else {
-                      for (let i = 0; i < 16; i++) ks[i] = t[i] ^ rk[roff + i];
-                    }
-                  }
-                  const rem = Math.min(16, len - off);
-                  for (let i = 0; i < rem; i++) out[off + i] = src[off + i] ^ ks[i];
-                  for (let c = 15; c >= 8; c--) {
-                    const nxt = (ctr[c] + 1) & 0xff;
-                    ctr[c] = nxt;
-                    if (nxt !== 0) break;
-                  }
-                }
-                return out.buffer;
-              }
-
-              async function aesCtrDecryptChunk(cryptoKey, masterKey32, nonce8, blockIndex, encBuf) {
-                const iv = makeCtrIv(nonce8, blockIndex);
-                if (cryptoKey && window.crypto && window.crypto.subtle) {
-                  try {
-                    return await window.crypto.subtle.decrypt({ name: 'AES-CTR', counter: iv, length: 64 }, cryptoKey, encBuf);
-                  } catch (e) {}
-                }
-                return aes256CtrProcessFast(masterKey32, iv, encBuf);
+                return new Uint8Array(await crypto.subtle.digest('SHA-256', data));
               }
 
               function makeCtrIv(nonce8, blockIndex) {
@@ -1098,28 +1050,6 @@ jobs:
                 return new Uint8Array(out);
               }
 
-              // Fast native Base64 decode without regex copying
-              function b64ToBytesFast(b64) {
-                const bin = atob(b64.trim());
-                const len = bin.length;
-                const out = new Uint8Array(len);
-                for (let i = 0; i < len; i++) out[i] = bin.charCodeAt(i);
-                return out;
-              }
-
-              function blobToBase64(blob) {
-                return new Promise((resolve, reject) => {
-                  const reader = new FileReader();
-                  reader.onload = () => {
-                    const res = String(reader.result || '');
-                    const comma = res.indexOf(',');
-                    resolve(comma >= 0 ? res.slice(comma + 1) : res);
-                  };
-                  reader.onerror = reject;
-                  reader.readAsDataURL(blob);
-                });
-              }
-
               async function deriveZkKdf(passwordStr) {
                 const enc = new TextEncoder();
                 const baseKey = await crypto.subtle.importKey('raw', enc.encode(passwordStr), 'PBKDF2', false, ['deriveBits']);
@@ -1132,9 +1062,74 @@ jobs:
               }
 
               // =========================================================================
-              // SERVICE WORKER REGISTRATION (FOR ONLINE STREAMING)
+              // INDEXEDDB VIDEO CACHE (INSTANT ZERO-WAIT PLAYBACK ON REDIRECT)
               // =========================================================================
-              if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
+              function saveVideoToIndexedDb(filename, blob) {
+                try {
+                  const req = indexedDB.open('vlock_instant_db', 1);
+                  req.onupgradeneeded = (e) => {
+                    const db = e.target.result;
+                    if (!db.objectStoreNames.contains('media')) db.createObjectStore('media');
+                  };
+                  req.onsuccess = (e) => {
+                    const db = e.target.result;
+                    const tx = db.transaction('media', 'readwrite');
+                    const store = tx.objectStore('media');
+                    store.put({ name: filename, blob: blob }, 'latest');
+                    if (filename) store.put({ name: filename, blob: blob }, filename);
+                    tx.oncomplete = () => db.close();
+                  };
+                } catch (e) {}
+              }
+
+              function getVideoFromIndexedDb(filename) {
+                return new Promise((resolve) => {
+                  try {
+                    const req = indexedDB.open('vlock_instant_db', 1);
+                    req.onupgradeneeded = (e) => {
+                      const db = e.target.result;
+                      if (!db.objectStoreNames.contains('media')) db.createObjectStore('media');
+                    };
+                    req.onsuccess = (e) => {
+                      const db = e.target.result;
+                      if (!db.objectStoreNames.contains('media')) { db.close(); resolve(null); return; }
+                      const tx = db.transaction('media', 'readonly');
+                      const store = tx.objectStore('media');
+                      const key = filename || 'latest';
+                      const g = store.get(key);
+                      g.onsuccess = () => {
+                        if (g.result && g.result.blob) {
+                          const b = g.result.blob;
+                          b.name = g.result.name || filename || 'Video.html';
+                          db.close();
+                          resolve(b);
+                        } else if (key !== 'latest') {
+                          const g2 = store.get('latest');
+                          g2.onsuccess = () => {
+                            db.close();
+                            if (g2.result && g2.result.blob) {
+                              const b = g2.result.blob;
+                              b.name = g2.result.name || 'Video.html';
+                              resolve(b);
+                            } else resolve(null);
+                          };
+                          g2.onerror = () => { db.close(); resolve(null); };
+                        } else {
+                          db.close();
+                          resolve(null);
+                        }
+                      };
+                      g.onerror = () => { db.close(); resolve(null); };
+                    };
+                    req.onerror = () => resolve(null);
+                  } catch (e) { resolve(null); }
+                });
+              }
+
+              // =========================================================================
+              // SERVICE WORKER REGISTRATION (LOCAL 1 MB CHUNKED VIDEO STREAMING)
+              // =========================================================================
+              if ('serviceWorker' in navigator) {
                 navigator.serviceWorker.register('./sw.js').catch(() => {});
                 navigator.serviceWorker.addEventListener('message', async (event) => {
                   const data = event.data;
@@ -1156,7 +1151,11 @@ jobs:
                     const readEnd = Math.min(sess.file.size, readStart + contentLen + byteSkip + 16);
                     const encBuf = await sess.file.slice(readStart, readEnd).arrayBuffer();
 
-                    const decFull = await aesCtrDecryptChunk(sess.cryptoKey, sess.masterKey, sess.nonce8, blockIndex, encBuf);
+                    const decFull = await crypto.subtle.decrypt(
+                      { name: 'AES-CTR', counter: makeCtrIv(sess.nonce8, blockIndex), length: 64 },
+                      sess.cryptoKey,
+                      encBuf
+                    );
                     const sliced = decFull.slice(byteSkip, byteSkip + contentLen);
                     port.postMessage({ ok: true, buffer: sliced }, [sliced]);
                   } catch (err) {
@@ -1165,71 +1164,76 @@ jobs:
                 });
               }
 
-              // =========================================================================
-              // INSTANT 0.01s EMBEDDED .HTML DETECTION (NO UPFRONT DECODING ON PAGE LOAD!)
-              // =========================================================================
-              function detectEmbeddedVideoOnStartup() {
-                const metaEl = document.getElementById('vlock-embedded-meta');
-                const headerChunkEl = document.getElementById('vlock-b64-header');
-                if (!metaEl || !headerChunkEl) return;
-
-                hasEmbeddedDomChunks = true;
-                embeddedFileName = metaEl.getAttribute('data-filename') || 'Encrypted_Video.html';
-                embeddedTotalBytes = parseInt(metaEl.getAttribute('data-size') || '0', 10);
-                const sizeMb = (embeddedTotalBytes / (1024 * 1024)).toFixed(1);
-
-                // Hide Admin Panel & Tutorial when user opens an encrypted .html video file directly
-                const adminCard = document.getElementById('adminEncryptionCard');
-                if (adminCard) adminCard.style.display = 'none';
-
-                document.getElementById('viewerFileTitle').textContent = `Ready to Unlock: ${embeddedFileName} (${sizeMb} MB)`;
-                document.getElementById('instantKeyModalFileLabel').textContent = `🎬 Ready to Play: ${embeddedFileName} (${sizeMb} MB)`;
-                document.getElementById('instantKeyModal').classList.add('show');
-                setTimeout(() => {
-                  const modalInput = document.getElementById('modalViewerKeyInput');
-                  if (modalInput) modalInput.focus();
-                }, 50);
+              async function ensureServiceWorkerReady() {
+                if (!('serviceWorker' in navigator)) return false;
+                if (navigator.serviceWorker.controller) return true;
+                try {
+                  await navigator.serviceWorker.register('./sw.js');
+                  await Promise.race([
+                    navigator.serviceWorker.ready,
+                    new Promise(r => setTimeout(r, 1200))
+                  ]);
+                  if (!navigator.serviceWorker.controller) {
+                    await new Promise((resolve) => {
+                      const t = setTimeout(resolve, 700);
+                      navigator.serviceWorker.addEventListener('controllerchange', () => {
+                        clearTimeout(t);
+                        resolve();
+                      }, { once: true });
+                    });
+                  }
+                } catch (e) {}
+                return !!navigator.serviceWorker.controller;
               }
 
-              // Support picking either a .html encrypted file or legacy file via the file picker
-              async function extractFileFromPickedHtml(file) {
-                const headProbe = new TextDecoder().decode(await file.slice(0, 1024).arrayBuffer());
-                if (headProbe.includes('<!DOCTYPE html>') || headProbe.includes('vlock-b64-')) {
-                  const fullText = await file.text();
-                  const parts = [];
-                  const headMatch = /<script[^>]*id="vlock-b64-header"[^>]*>([\s\S]*?)<\/script>/.exec(fullText);
-                  if (headMatch) parts.push(new Blob([b64ToBytesFast(headMatch[1])]));
-
-                  const regex = /<script[^>]*class="vlock-b64-chunk"[^>]*>([\s\S]*?)<\/script>/g;
-                  let match;
-                  while ((match = regex.exec(fullText)) !== null) {
-                    parts.push(new Blob([b64ToBytesFast(match[1])]));
-                  }
-                  if (parts.length > 0) {
-                    const outBlob = new Blob(parts, { type: 'application/octet-stream' });
-                    outBlob.name = file.name;
-                    return outBlob;
-                  }
-                }
-                return file;
-              }
-
-              async function onVlockFilePicked(file, showPopup = true) {
+              function onVlockFilePicked(file, openPopup = true) {
                 if (!file) return;
-                hasEmbeddedDomChunks = false;
-                selectedVlockFile = await extractFileFromPickedHtml(file);
-                const displayName = file.name || 'Encrypted_Video.html';
-                const sizeMb = (selectedVlockFile.size / (1024 * 1024)).toFixed(1);
-                document.getElementById('viewerFileTitle').textContent = `Ready to Unlock: ${displayName} (${sizeMb} MB)`;
+                selectedVlockFile = file;
+                saveVideoToIndexedDb(file.name, file);
+                const sizeMb = (file.size / (1024 * 1024)).toFixed(1);
+                document.getElementById('viewerFileTitle').textContent = `Ready to Unlock: ${file.name} (${sizeMb} MB)`;
 
-                if (showPopup) {
-                  document.getElementById('instantKeyModalFileLabel').textContent = `🎬 Ready to Play: ${displayName} (${sizeMb} MB)`;
+                const currentKey = document.getElementById('viewerKeyInput').value.trim();
+                if (autoPlayPendingAfterPick && currentKey) {
+                  autoPlayPendingAfterPick = false;
+                  handleDecryptAndWatch();
+                  return;
+                }
+
+                if (openPopup) {
+                  document.getElementById('instantKeyModalFileLabel').textContent = `🎬 Ready to Play: ${file.name} (${sizeMb} MB)`;
                   document.getElementById('instantKeyModal').classList.add('show');
                   setTimeout(() => {
                     const modalInput = document.getElementById('modalViewerKeyInput');
                     if (modalInput) modalInput.focus();
-                  }, 50);
+                  }, 60);
                 }
+              }
+
+              async function checkRedirectedVideoLaunch() {
+                const params = new URLSearchParams(window.location.search);
+                if (!params.has('play') && !params.has('auto_unlock')) return;
+
+                const targetName = params.get('play') || params.get('file') || '';
+                window.history.replaceState({}, document.title, window.location.pathname);
+
+                const cached = await getVideoFromIndexedDb(targetName);
+                if (cached) {
+                  selectedVlockFile = cached;
+                  const sizeMb = (cached.size / (1024 * 1024)).toFixed(1);
+                  document.getElementById('viewerFileTitle').textContent = `Ready to Unlock: ${cached.name} (${sizeMb} MB)`;
+                  document.getElementById('instantKeyModalFileLabel').textContent = `🎬 Ready to Play: ${cached.name} (${sizeMb} MB)`;
+                } else {
+                  document.getElementById('instantKeyModalFileLabel').textContent = targetName
+                    ? `🎬 Opening "${targetName}" — Paste your key & tap Decrypt & Watch:`
+                    : `🎬 Paste your Decryption Key below to unlock & play your video:`;
+                }
+
+                document.getElementById('instantKeyModal').classList.add('show');
+                setTimeout(() => {
+                  const modalInput = document.getElementById('modalViewerKeyInput');
+                  if (modalInput) modalInput.focus();
+                }, 60);
               }
 
               function onRawMediaPicked(file) {
@@ -1425,11 +1429,8 @@ jobs:
               }
 
               function refreshAdminLockUI() {
-                let expiry = 0, plan = '';
-                try {
-                  expiry = parseInt(localStorage.getItem('vlock_admin_expiry') || '0', 10);
-                  plan = localStorage.getItem('vlock_admin_plan') || '';
-                } catch (e) {}
+                const expiry = parseInt(localStorage.getItem('vlock_admin_expiry') || '0', 10);
+                const plan = localStorage.getItem('vlock_admin_plan') || '';
                 const now = Math.floor(Date.now() / 1000);
                 const badge = document.getElementById('adminStatusBadge');
                 const lockedSec = document.getElementById('adminLockedSection');
@@ -1456,105 +1457,135 @@ jobs:
                 }
               }
 
-              // Browser-safe MIME type so hardware video decoders never show a black screen
-              function resolvePlaybackMimeType(ext) {
+              function resolveMimeType(ext) {
                 const e = ext.toLowerCase();
-                if (e === '.webm') return 'video/webm';
-                if (e === '.ogg') return 'audio/ogg';
-                if (e === '.mp3') return 'audio/mpeg';
-                if (e === '.flac') return 'audio/flac';
-                if (e === '.wav') return 'audio/wav';
-                if (e === '.aac') return 'audio/aac';
-                if (e === '.m4a') return 'audio/mp4';
-                return 'video/mp4';
+                const map = {
+                  '.mp4': 'video/mp4', '.m4v': 'video/mp4', '.mkv': 'video/x-matroska', '.webm': 'video/webm',
+                  '.avi': 'video/x-msvideo', '.mov': 'video/quicktime', '.ts': 'video/mp2t', '.mp3': 'audio/mpeg',
+                  '.flac': 'audio/flac', '.wav': 'audio/wav', '.aac': 'audio/aac', '.ogg': 'audio/ogg', '.m4a': 'audio/mp4'
+                };
+                return map[e] || 'video/mp4';
               }
 
               // =========================================================================
-              // STREAMING PLATFORM FULLSCREEN & LANDSCAPE ROTATION ENGINE
+              // YOUTUBE / NETFLIX PLAYER CONTROLLER
               // =========================================================================
+              function formatMediaTime(sec) {
+                if (!isFinite(sec) || sec < 0) return "00:00";
+                const total = Math.floor(sec);
+                const h = Math.floor(total / 3600);
+                const m = Math.floor((total % 3600) / 60);
+                const s = total % 60;
+                if (h > 0) {
+                  return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+                }
+                return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+              }
+
+              function wakePlayerUi() {
+                const wrap = document.getElementById('playerWrap');
+                wrap.classList.remove('hide-ui');
+                clearTimeout(uiHideTimer);
+                const videoEl = document.getElementById('vlockVideoPlayer');
+                if (!videoEl.paused) {
+                  uiHideTimer = setTimeout(() => {
+                    if (!videoEl.paused) wrap.classList.add('hide-ui');
+                  }, 3000);
+                }
+              }
+
+              function togglePlayPause() {
+                const videoEl = document.getElementById('vlockVideoPlayer');
+                if (videoEl.paused) {
+                  videoEl.play().catch(() => {});
+                } else {
+                  videoEl.pause();
+                }
+                wakePlayerUi();
+              }
+
+              function triggerSeekRipple(side, deltaSec) {
+                const videoEl = document.getElementById('vlockVideoPlayer');
+                videoEl.currentTime = Math.max(0, Math.min(videoEl.duration || Infinity, (videoEl.currentTime || 0) + deltaSec));
+                const el = document.getElementById(side === 'left' ? 'rippleLeft' : 'rippleRight');
+                el.classList.add('show');
+                setTimeout(() => el.classList.remove('show'), 450);
+                wakePlayerUi();
+              }
+
               async function toggleCinemaFullScreen() {
-                const playerWrap = document.getElementById('playerWrap');
+                const wrap = document.getElementById('playerWrap');
                 const videoEl = document.getElementById('vlockVideoPlayer');
 
                 const isNativeFs = !!(document.fullscreenElement || document.webkitFullscreenElement);
-                const isCssFs = playerWrap.classList.contains('cinema-fullscreen') || playerWrap.classList.contains('force-landscape');
+                const isCustomFs = wrap.classList.contains('css-fullscreen') || wrap.classList.contains('landscape-rotated');
 
-                if (isNativeFs || isCssFs) {
+                if (isNativeFs || isCustomFs) {
                   if (document.exitFullscreen && document.fullscreenElement) {
                     await document.exitFullscreen().catch(() => {});
                   } else if (document.webkitExitFullscreen && document.webkitFullscreenElement) {
                     document.webkitExitFullscreen();
                   }
-                  playerWrap.classList.remove('cinema-fullscreen', 'force-landscape');
+                  wrap.classList.remove('css-fullscreen', 'landscape-rotated');
                   if (screen.orientation && screen.orientation.unlock) {
                     try { screen.orientation.unlock(); } catch (e) {}
                   }
+                  wakePlayerUi();
                   return;
                 }
 
                 try {
-                  if (playerWrap.requestFullscreen) {
-                    await playerWrap.requestFullscreen();
-                  } else if (playerWrap.webkitRequestFullscreen) {
-                    playerWrap.webkitRequestFullscreen();
+                  if (wrap.requestFullscreen) {
+                    await wrap.requestFullscreen();
+                  } else if (wrap.webkitRequestFullscreen) {
+                    wrap.webkitRequestFullscreen();
                   } else if (videoEl.webkitEnterFullscreen) {
                     videoEl.webkitEnterFullscreen();
                     return;
                   } else {
-                    playerWrap.classList.add('cinema-fullscreen');
+                    wrap.classList.add('css-fullscreen');
                   }
                   if (screen.orientation && screen.orientation.lock) {
                     await screen.orientation.lock('landscape').catch(() => {});
                   }
                 } catch (e) {
-                  // Fallback for Android content:// / WebView where native requestFullscreen is blocked
-                  playerWrap.classList.add('cinema-fullscreen');
+                  wrap.classList.add('css-fullscreen');
                 }
+                wakePlayerUi();
               }
 
-              function toggleForceLandscape() {
-                const playerWrap = document.getElementById('playerWrap');
-                if (playerWrap.classList.contains('force-landscape')) {
-                  playerWrap.classList.remove('force-landscape');
+              function toggleLandscapeRotation() {
+                const wrap = document.getElementById('playerWrap');
+                if (wrap.classList.contains('landscape-rotated')) {
+                  wrap.classList.remove('landscape-rotated');
                 } else {
-                  playerWrap.classList.remove('cinema-fullscreen');
-                  playerWrap.classList.add('force-landscape');
+                  wrap.classList.remove('css-fullscreen');
+                  wrap.classList.add('landscape-rotated');
                 }
+                wakePlayerUi();
               }
 
-              async function startVideoElementSafely(videoEl, srcUrl) {
-                return new Promise((resolve) => {
-                  const onReady = () => {
-                    videoEl.removeEventListener('loadedmetadata', onReady);
-                    videoEl.removeEventListener('error', onReady);
-                    videoEl.play().catch(() => {});
-                    resolve();
-                  };
-                  videoEl.addEventListener('loadedmetadata', onReady, { once: true });
-                  videoEl.addEventListener('error', onReady, { once: true });
-                  videoEl.src = srcUrl;
-                  videoEl.load();
-                });
-              }
-
-              // =========================================================================
-              // MEMORY-SAFE DECRYPTION & PLAYBACK (BOTH EMBEDDED .HTML & PICKED FILES)
-              // =========================================================================
               async function handleDecryptAndWatch() {
-                if (!hasEmbeddedDomChunks && !selectedVlockFile) {
-                  alert("Please select an encrypted .html video file first.");
-                  return;
-                }
                 const rawKey = document.getElementById('viewerKeyInput').value.trim().toUpperCase();
                 if (!rawKey) {
                   alert("Please paste your One-Time Key or Permanent Masterkey.");
                   return;
                 }
 
+                if (!selectedVlockFile) {
+                  autoPlayPendingAfterPick = true;
+                  document.getElementById('vlockFileInput').click();
+                  return;
+                }
+
                 const btn = document.getElementById('btnDecryptWatch');
                 const modalBtn = document.getElementById('btnModalDecryptWatch');
                 btn.disabled = true;
-                if (modalBtn) modalBtn.disabled = true;
+                btn.textContent = "Verifying Key & Preparing Stream...";
+                if (modalBtn) {
+                  modalBtn.disabled = true;
+                  modalBtn.textContent = "Starting Instant Stream...";
+                }
 
                 try {
                   const enc = new TextEncoder();
@@ -1562,25 +1593,17 @@ jobs:
                   const targetKeyId = (await sha256Bytes(kBytes)).slice(0, 15);
                   const wrapMask = await sha256Bytes(concatBytes(kBytes, enc.encode("VLOCK_WRAP")));
 
-                  let headerAndSlotsBytes = null;
-                  if (hasEmbeddedDomChunks) {
-                    const headerScript = document.getElementById('vlock-b64-header');
-                    if (!headerScript) throw new Error("Video stream already consumed. Reload page to watch with a new key.");
-                    headerAndSlotsBytes = b64ToBytesFast(headerScript.textContent);
-                  } else {
-                    const probeLen = Math.min(selectedVlockFile.size, 5000000);
-                    headerAndSlotsBytes = new Uint8Array(await selectedVlockFile.slice(0, probeLen).arrayBuffer());
-                  }
-
+                  // Locate binary VLCK header (supports both 2 KB HTML launcher offset and legacy offset 0)
+                  const probeLen = Math.min(selectedVlockFile.size, 8192);
+                  const probeBytes = new Uint8Array(await selectedVlockFile.slice(0, probeLen).arrayBuffer());
                   let vlockStart = -1;
-                  const maxScan = Math.min(headerAndSlotsBytes.length - 6, 8192);
-                  for (let i = 0; i <= maxScan; i++) {
-                    const ver = (headerAndSlotsBytes[i + 4] << 8) | headerAndSlotsBytes[i + 5];
+                  for (let i = 0; i <= probeBytes.length - 6; i++) {
+                    const ver = (probeBytes[i + 4] << 8) | probeBytes[i + 5];
                     if (
-                      headerAndSlotsBytes[i] === 0x56 &&
-                      headerAndSlotsBytes[i + 1] === 0x4C &&
-                      headerAndSlotsBytes[i + 2] === 0x43 &&
-                      headerAndSlotsBytes[i + 3] === 0x4B &&
+                      probeBytes[i] === 0x56 &&
+                      probeBytes[i + 1] === 0x4C &&
+                      probeBytes[i + 2] === 0x43 &&
+                      probeBytes[i + 3] === 0x4B &&
                       (ver === 1 || ver === 2)
                     ) {
                       vlockStart = i;
@@ -1591,21 +1614,23 @@ jobs:
                     throw new Error("Not a valid VLock encrypted video file.");
                   }
 
-                  const headSlice = headerAndSlotsBytes.slice(vlockStart, vlockStart + 66);
-                  const dv = new DataView(headSlice.buffer, headSlice.byteOffset, headSlice.byteLength);
+                  const headBuf = await selectedVlockFile.slice(vlockStart, vlockStart + 66).arrayBuffer();
+                  const headBytes = new Uint8Array(headBuf);
+
+                  const dv = new DataView(headBuf);
                   const version = dv.getUint16(4, false);
                   let ext = ".mp4", nonce8, verifyHash, numKeys, fixedLen;
 
                   if (version === 1) {
-                    ext = new TextDecoder().decode(headSlice.slice(6, 14)).replace(/\0/g, '').trim() || ".mp4";
-                    nonce8 = headSlice.slice(14, 22);
-                    verifyHash = headSlice.slice(22, 54);
+                    ext = new TextDecoder().decode(headBytes.slice(6, 14)).replace(/\0/g, '').trim() || ".mp4";
+                    nonce8 = headBytes.slice(14, 22);
+                    verifyHash = headBytes.slice(22, 54);
                     numKeys = dv.getUint32(54, false);
                     fixedLen = 58;
                   } else if (version === 2) {
-                    ext = new TextDecoder().decode(headSlice.slice(6, 22)).replace(/\0/g, '').trim() || ".mp4";
-                    nonce8 = headSlice.slice(22, 30);
-                    verifyHash = headSlice.slice(30, 62);
+                    ext = new TextDecoder().decode(headBytes.slice(6, 22)).replace(/\0/g, '').trim() || ".mp4";
+                    nonce8 = headBytes.slice(22, 30);
+                    verifyHash = headBytes.slice(30, 62);
                     numKeys = dv.getUint32(62, false);
                     fixedLen = 66;
                   } else {
@@ -1614,7 +1639,8 @@ jobs:
 
                   const slotsStart = vlockStart + fixedLen;
                   const payloadOffset = slotsStart + (numKeys * SLOT_SIZE);
-                  const slotsData = headerAndSlotsBytes.slice(slotsStart, payloadOffset);
+                  const payloadSize = selectedVlockFile.size - payloadOffset;
+                  const slotsData = new Uint8Array(await selectedVlockFile.slice(slotsStart, payloadOffset).arrayBuffer());
 
                   let matchedIdx = -1, slotStatus = 0, wrappedMk = null;
                   for (let i = 0; i < numKeys; i++) {
@@ -1636,8 +1662,7 @@ jobs:
                   }
 
                   const keyHex = bytesToHex(targetKeyId);
-                  let burnedKeys = {};
-                  try { burnedKeys = JSON.parse(localStorage.getItem('vlock_burned_keys') || '{}'); } catch (e) {}
+                  const burnedKeys = JSON.parse(localStorage.getItem('vlock_burned_keys') || '{}');
                   if (slotStatus === 0 || (slotStatus === 1 && burnedKeys[keyHex])) {
                     throw new Error("Previous key expired! Please enter a new key from the Telegram Bot to watch again.");
                   }
@@ -1650,96 +1675,53 @@ jobs:
                     throw new Error("Key verification failed.");
                   }
 
-                  let cryptoKey = null;
-                  if (window.crypto && window.crypto.subtle) {
-                    try {
-                      cryptoKey = await window.crypto.subtle.importKey('raw', masterKey, 'AES-CTR', false, ['decrypt']);
-                    } catch (e) {}
-                  }
-
-                  // Burn one-time key after verification
-                  if (slotStatus === 1) {
-                    burnedKeys[keyHex] = Date.now();
-                    try { localStorage.setItem('vlock_burned_keys', JSON.stringify(burnedKeys)); } catch (e) {}
-                  }
-
-                  const mime = resolvePlaybackMimeType(ext);
-                  const decBlobParts = [];
-
-                  if (hasEmbeddedDomChunks) {
-                    // Decrypt embedded DOM chunks one-by-one and immediately free each script tag to save 65% GPU/RAM
-                    const chunkNodes = Array.from(document.querySelectorAll('script.vlock-b64-chunk'));
-                    const totalChunks = chunkNodes.length;
-                    let byteOffset = 0;
-
-                    for (let idx = 0; idx < totalChunks; idx++) {
-                      const pct = Math.round(((idx + 1) / totalChunks) * 100);
-                      const msg = `Unlocking Video... ${pct}%`;
-                      btn.textContent = msg;
-                      if (modalBtn) modalBtn.textContent = msg;
-                      await new Promise(r => setTimeout(r, 0));
-
-                      const node = chunkNodes[idx];
-                      const encBytes = b64ToBytesFast(node.textContent);
-                      node.textContent = '';
-                      node.remove();
-
-                      const decBuf = await aesCtrDecryptChunk(cryptoKey, masterKey, nonce8, Math.floor(byteOffset / 16), encBytes);
-                      decBlobParts.push(new Blob([decBuf]));
-                      byteOffset += encBytes.byteLength;
-                    }
-                    hasEmbeddedDomChunks = false;
-                  } else {
-                    const payloadSize = selectedVlockFile.size - payloadOffset;
-                    // Use instant Service Worker range streaming if online & not restoring permanent masterkey
-                    if (slotStatus !== 2 && cryptoKey && navigator.serviceWorker && navigator.serviceWorker.controller) {
-                      document.getElementById('instantKeyModal').classList.remove('show');
-                      closePlayerStream();
-                      document.getElementById('playerWrap').classList.add('active');
-                      document.getElementById('nowPlayingLabel').textContent = "Now Playing: " + (selectedVlockFile.name || 'Decrypted Video');
-                      const videoEl = document.getElementById('vlockVideoPlayer');
-                      const sid = Math.random().toString(36).slice(2) + Date.now().toString(36);
-                      activeStreamSessions[sid] = { file: selectedVlockFile, cryptoKey, masterKey, nonce8, payloadOffset, payloadSize };
-                      await startVideoElementSafely(videoEl, `./__vlock_stream__/Episode.mp4?sid=${sid}&size=${payloadSize}&mime=${encodeURIComponent(mime)}`);
-                      document.getElementById('playerWrap').scrollIntoView({ behavior: 'smooth', block: 'center' });
-                      return;
-                    }
-
-                    const chunkSize = 8 * 1024 * 1024;
-                    let offset = 0;
-                    while (offset < payloadSize) {
-                      const pct = Math.min(100, Math.round((offset / payloadSize) * 100));
-                      const msg = `Unlocking Video... ${pct}%`;
-                      btn.textContent = msg;
-                      if (modalBtn) modalBtn.textContent = msg;
-                      await new Promise(r => setTimeout(r, 0));
-
-                      const len = Math.min(chunkSize, payloadSize - offset);
-                      const encChunk = await selectedVlockFile.slice(payloadOffset + offset, payloadOffset + offset + len).arrayBuffer();
-                      const decChunk = await aesCtrDecryptChunk(cryptoKey, masterKey, nonce8, Math.floor(offset / 16), encChunk);
-                      decBlobParts.push(new Blob([decChunk]));
-                      offset += len;
-                    }
-                  }
+                  const cryptoKey = await crypto.subtle.importKey('raw', masterKey, 'AES-CTR', false, ['decrypt']);
 
                   document.getElementById('instantKeyModal').classList.remove('show');
-                  const finalVideoBlob = new Blob(decBlobParts, { type: mime });
 
                   if (slotStatus === 2) {
-                    const baseTitle = (embeddedFileName || (selectedVlockFile && selectedVlockFile.name) || 'Video').replace(/\.(html|htm|vlock)$/i, '');
-                    const outName = `${baseTitle}_Unlocked${ext}`;
-                    await saveBlobToDisk(finalVideoBlob, outName);
-                    alert("Permanent Masterkey Verified!\n\nVideo unlocked forever and restored to its original format: " + outName);
+                    await restoreOriginalMediaLocally(selectedVlockFile, cryptoKey, nonce8, payloadOffset, payloadSize, ext);
                     return;
                   }
 
+                  burnedKeys[keyHex] = Date.now();
+                  localStorage.setItem('vlock_burned_keys', JSON.stringify(burnedKeys));
+
                   closePlayerStream();
-                  document.getElementById('playerWrap').classList.add('active');
-                  document.getElementById('nowPlayingLabel').textContent = "Now Playing: " + (embeddedFileName || (selectedVlockFile && selectedVlockFile.name) || 'Decrypted Video');
+                  const mime = resolveMimeType(ext);
+                  const wrap = document.getElementById('playerWrap');
+                  wrap.classList.add('active', 'buffering');
+                  document.getElementById('nowPlayingLabel').textContent = selectedVlockFile.name.replace(/\.(html|htm|vlock)$/i, '');
                   const videoEl = document.getElementById('vlockVideoPlayer');
-                  currentObjectUrl = URL.createObjectURL(finalVideoBlob);
-                  await startVideoElementSafely(videoEl, currentObjectUrl);
-                  document.getElementById('playerWrap').scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+                  const swReady = await ensureServiceWorkerReady();
+                  if (swReady) {
+                    const sid = Math.random().toString(36).slice(2) + Date.now().toString(36);
+                    activeStreamSessions[sid] = { file: selectedVlockFile, cryptoKey, nonce8, payloadOffset, payloadSize };
+                    videoEl.src = `./__vlock_stream__/Episode${ext}?sid=${sid}&size=${payloadSize}&mime=${encodeURIComponent(mime)}`;
+                    videoEl.play().catch(() => {});
+                  } else {
+                    const blobParts = [];
+                    const chunkSize = 8 * 1024 * 1024;
+                    let offset = 0;
+                    while (offset < payloadSize) {
+                      const len = Math.min(chunkSize, payloadSize - offset);
+                      const encChunk = await selectedVlockFile.slice(payloadOffset + offset, payloadOffset + offset + len).arrayBuffer();
+                      const decChunk = await crypto.subtle.decrypt(
+                        { name: 'AES-CTR', counter: makeCtrIv(nonce8, Math.floor(offset / 16)), length: 64 },
+                        cryptoKey,
+                        encChunk
+                      );
+                      blobParts.push(new Blob([decChunk]));
+                      offset += len;
+                    }
+                    currentObjectUrl = URL.createObjectURL(new Blob(blobParts, { type: mime }));
+                    videoEl.src = currentObjectUrl;
+                    videoEl.play().catch(() => {});
+                  }
+
+                  wrap.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                  wakePlayerUi();
                 } catch (err) {
                   alert(err.message);
                 } finally {
@@ -1753,8 +1735,8 @@ jobs:
               }
 
               function closePlayerStream() {
-                const playerWrap = document.getElementById('playerWrap');
-                playerWrap.classList.remove('cinema-fullscreen', 'force-landscape');
+                const wrap = document.getElementById('playerWrap');
+                wrap.classList.remove('active', 'playing', 'buffering', 'css-fullscreen', 'landscape-rotated', 'hide-ui');
                 if (document.fullscreenElement && document.exitFullscreen) {
                   document.exitFullscreen().catch(() => {});
                 }
@@ -1767,7 +1749,26 @@ jobs:
                   currentObjectUrl = null;
                 }
                 activeStreamSessions = {};
-                playerWrap.classList.remove('active');
+              }
+
+              async function restoreOriginalMediaLocally(vlockFile, cryptoKey, nonce8, payloadOffset, payloadSize, ext) {
+                const blobParts = [];
+                const chunkSize = 8 * 1024 * 1024;
+                let offset = 0;
+                while (offset < payloadSize) {
+                  const len = Math.min(chunkSize, payloadSize - offset);
+                  const encChunk = await vlockFile.slice(payloadOffset + offset, payloadOffset + offset + len).arrayBuffer();
+                  const decChunk = await crypto.subtle.decrypt(
+                    { name: 'AES-CTR', counter: makeCtrIv(nonce8, Math.floor(offset / 16)), length: 64 },
+                    cryptoKey,
+                    encChunk
+                  );
+                  blobParts.push(new Blob([decChunk]));
+                  offset += len;
+                }
+                const outName = `${vlockFile.name.replace(/\.(html|htm|vlock)$/i, '')}_Unlocked${ext}`;
+                await saveBlobToDisk(new Blob(blobParts, { type: resolveMimeType(ext) }), outName);
+                alert("Permanent Masterkey Verified!\n\nVideo unlocked forever and restored to its original format: " + outName);
               }
 
               async function saveBlobToDisk(blob, filename) {
@@ -1803,7 +1804,7 @@ jobs:
               }
 
               // =========================================================================
-              // FAST .HTML SELF-OPENING VIDEO ENCRYPTION ENGINE
+              // NATIVE-SPEED BINARY ENCRYPTION INTO SELF-REDIRECTING .HTML FILE
               // =========================================================================
               async function handleStartEncryption() {
                 refreshAdminLockUI();
@@ -1887,6 +1888,23 @@ jobs:
                   document.getElementById('keysOutputBox').classList.add('show');
                   await saveBlobToDisk(new Blob([lastGeneratedKeysContent], { type: 'text/plain;charset=utf-8' }), 'bot_keys.txt');
 
+                  const outHtmlName = `${stem}.html`;
+                  const redirectTarget = `${window.location.origin}${window.location.pathname}?play=${encodeURIComponent(outHtmlName)}`;
+
+                  // 2 KB Instant Launcher Header: calls window.stop() to abort parsing binary tail and redirects in <0.1s
+                  const launcherHtml =
+                    `<!DOCTYPE html><html><head><meta charset="UTF-8">` +
+                    `<meta name="viewport" content="width=device-width,initial-scale=1.0">` +
+                    `<title>Opening VLock Cinema Player...</title>` +
+                    `<script>try{window.stop();}catch(e){}window.location.replace(${JSON.stringify(redirectTarget)});<\/script>` +
+                    `<meta http-equiv="refresh" content="0;url=${redirectTarget}">` +
+                    `</head><body style="background:#0d1117;color:#3fb950;font-family:system-ui,sans-serif;display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;margin:0;">` +
+                    `<h3>Opening VLock Cinema Player...</h3>` +
+                    `<p style="color:#c9d1d9;font-size:13px;margin-top:8px;"><a href="${redirectTarget}" style="color:#58a6ff;">Tap here if not redirected automatically</a></p>` +
+                    `</body></html>`;
+                  const padCount = Math.max(0, 2048 - launcherHtml.length);
+                  const launcherBytes = enc.encode(launcherHtml + `<!--${"-".repeat(padCount)}-->`);
+
                   const headerFixed = new Uint8Array(66);
                   headerFixed.set(enc.encode("VLCK"), 0);
                   const hDv = new DataView(headerFixed.buffer);
@@ -1897,30 +1915,11 @@ jobs:
                   hDv.setUint32(62, totalSlots, false);
 
                   const cryptoKey = await crypto.subtle.importKey('raw', masterKey, 'AES-CTR', false, ['encrypt']);
+                  const blobParts = [new Blob([launcherBytes]), new Blob([headerFixed]), new Blob([slotsBuffer])];
 
-                  // Build clean self-opening .html template
-                  const pageClone = document.documentElement.cloneNode(true);
-                  pageClone.querySelectorAll('script.vlock-b64-chunk, #vlock-b64-header, #vlock-embedded-meta').forEach(e => e.remove());
-                  const cleanDocHtml = "<!DOCTYPE html>\n" + pageClone.outerHTML;
-                  const bodyCloseIdx = cleanDocHtml.lastIndexOf('</body>');
-                  const htmlPrefix = cleanDocHtml.slice(0, bodyCloseIdx);
-                  const htmlSuffix = cleanDocHtml.slice(bodyCloseIdx);
-
-                  const outHtmlFileName = `${stem}.html`;
-                  const safeNameAttr = outHtmlFileName.replace(/"/g, '&quot;');
-                  const totalSize = selectedRawMediaFile.size;
-
-                  const htmlBlobParts = [
-                    new Blob([htmlPrefix]),
-                    new Blob([`\n<div id="vlock-embedded-meta" data-filename="${safeNameAttr}" data-size="${totalSize}" style="display:none"></div>\n`])
-                  ];
-
-                  // Separate small header script for instant 1ms key verification
-                  const headAndSlotsB64 = await blobToBase64(new Blob([headerFixed, slotsBuffer]));
-                  htmlBlobParts.push(new Blob([`<script type="text/plain" id="vlock-b64-header">${headAndSlotsB64}<\/script>\n`]));
-
-                  // 8 MB fast encryption chunks
+                  // 8 MB native binary chunks (Zero Base64 overhead!)
                   const chunkSize = 8 * 1024 * 1024;
+                  const totalSize = selectedRawMediaFile.size;
                   let offset = 0;
 
                   while (offset < totalSize) {
@@ -1931,19 +1930,17 @@ jobs:
                       cryptoKey,
                       plainSlice
                     );
-                    const chunkB64 = await blobToBase64(new Blob([encSlice]));
-                    htmlBlobParts.push(new Blob([`<script type="text/plain" class="vlock-b64-chunk">${chunkB64}<\/script>\n`]));
-
+                    blobParts.push(new Blob([encSlice]));
                     offset += len;
                     const pct = Math.min(100, Math.round((offset / totalSize) * 100));
                     progEl.style.width = pct + '%';
-                    statusEl.textContent = `Step 2/2: Encrypting into self-opening ${outHtmlFileName}... ${pct}% (0 MB internet used)`;
+                    statusEl.textContent = `Step 2/2: Encrypting locally on device... ${pct}% (0 MB internet used)`;
                   }
 
-                  htmlBlobParts.push(new Blob([htmlSuffix]));
-
-                  await saveBlobToDisk(new Blob(htmlBlobParts, { type: 'text/html;charset=utf-8' }), outHtmlFileName);
-                  statusEl.textContent = `Done! Saved ${outHtmlFileName} & bot_keys.txt to your device.`;
+                  const finalHtmlBlob = new Blob(blobParts, { type: 'text/html' });
+                  saveVideoToIndexedDb(outHtmlName, finalHtmlBlob);
+                  await saveBlobToDisk(finalHtmlBlob, outHtmlName);
+                  statusEl.textContent = `Done! Saved ${outHtmlName} & bot_keys.txt to your device.`;
                 } catch (err) {
                   alert("Encryption error: " + err.message);
                   statusEl.textContent = "Error: " + err.message;
@@ -1984,7 +1981,7 @@ jobs:
 
               document.addEventListener('DOMContentLoaded', () => {
                 refreshAdminLockUI();
-                detectEmbeddedVideoOnStartup();
+                checkRedirectedVideoLaunch();
 
                 bindDropZone('viewerDropZone', 'vlockFileInput', (f) => onVlockFilePicked(f, true));
                 bindDropZone('encryptDropZone', 'rawMediaInput', onRawMediaPicked);
@@ -2011,22 +2008,132 @@ jobs:
                   handleDecryptAndWatch();
                 });
 
-                // Streaming Cinema Player Controls (Full Screen, Rotate Landscape, Seek, Speed)
+                // =====================================================================
+                // YOUTUBE / NETFLIX CUSTOM PLAYER EVENT WIRING
+                // =====================================================================
+                const wrap = document.getElementById('playerWrap');
                 const videoEl = document.getElementById('vlockVideoPlayer');
-                document.getElementById('btnVideoOverlayFs').addEventListener('click', toggleCinemaFullScreen);
-                document.getElementById('btnPlayerFullScreenTop').addEventListener('click', toggleCinemaFullScreen);
-                document.getElementById('btnPlayerFullScreenBottom').addEventListener('click', toggleCinemaFullScreen);
-                document.getElementById('btnRotateLandscape').addEventListener('click', toggleForceLandscape);
-                videoEl.addEventListener('dblclick', toggleCinemaFullScreen);
+                const svgPlayIcon = document.getElementById('svgPlayIcon');
+                const centerPlayIcon = document.getElementById('centerPlayIcon');
+                const scrubberContainer = document.getElementById('scrubberContainer');
+                const scrubberWatched = document.getElementById('scrubberWatched');
+                const scrubberBuffered = document.getElementById('scrubberBuffered');
+                const scrubberThumb = document.getElementById('scrubberThumb');
+                const timeDisplay = document.getElementById('timeDisplay');
 
-                document.getElementById('btnSeekBack').addEventListener('click', () => {
-                  videoEl.currentTime = Math.max(0, (videoEl.currentTime || 0) - 10);
+                videoEl.addEventListener('play', () => {
+                  wrap.classList.add('playing');
+                  wrap.classList.remove('buffering');
+                  svgPlayIcon.innerHTML = '<path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/>';
+                  centerPlayIcon.textContent = '⏸';
+                  wakePlayerUi();
                 });
-                document.getElementById('btnSeekForward').addEventListener('click', () => {
-                  videoEl.currentTime = Math.min(videoEl.duration || Infinity, (videoEl.currentTime || 0) + 10);
+
+                videoEl.addEventListener('pause', () => {
+                  wrap.classList.remove('playing', 'hide-ui');
+                  svgPlayIcon.innerHTML = '<path d="M8 5v14l11-7z"/>';
+                  centerPlayIcon.textContent = '▶';
                 });
+
+                videoEl.addEventListener('waiting', () => wrap.classList.add('buffering'));
+                videoEl.addEventListener('playing', () => wrap.classList.remove('buffering'));
+                videoEl.addEventListener('canplay', () => wrap.classList.remove('buffering'));
+
+                videoEl.addEventListener('timeupdate', () => {
+                  const cur = videoEl.currentTime || 0;
+                  const dur = videoEl.duration || 0;
+                  if (dur > 0) {
+                    const pct = Math.min(100, Math.max(0, (cur / dur) * 100));
+                    scrubberWatched.style.width = pct + '%';
+                    scrubberThumb.style.left = pct + '%';
+                  }
+                  timeDisplay.textContent = `${formatMediaTime(cur)} / ${formatMediaTime(dur)}`;
+                });
+
+                videoEl.addEventListener('progress', () => {
+                  const dur = videoEl.duration || 0;
+                  if (dur > 0 && videoEl.buffered.length > 0) {
+                    const bufEnd = videoEl.buffered.end(videoEl.buffered.length - 1);
+                    scrubberBuffered.style.width = Math.min(100, (bufEnd / dur) * 100) + '%';
+                  }
+                });
+
+                // Scrubber Click & Drag Seek
+                const seekFromEvent = (e) => {
+                  const rect = scrubberContainer.getBoundingClientRect();
+                  const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+                  const pos = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+                  if (videoEl.duration) {
+                    videoEl.currentTime = pos * videoEl.duration;
+                  }
+                  wakePlayerUi();
+                };
+                let isDraggingScrubber = false;
+                scrubberContainer.addEventListener('mousedown', (e) => { isDraggingScrubber = true; seekFromEvent(e); });
+                window.addEventListener('mousemove', (e) => { if (isDraggingScrubber) seekFromEvent(e); });
+                window.addEventListener('mouseup', () => { isDraggingScrubber = false; });
+                scrubberContainer.addEventListener('touchstart', (e) => { isDraggingScrubber = true; seekFromEvent(e); }, { passive: true });
+                scrubberContainer.addEventListener('touchmove', (e) => { if (isDraggingScrubber) seekFromEvent(e); }, { passive: true });
+                scrubberContainer.addEventListener('touchend', () => { isDraggingScrubber = false; });
+
+                // Touch Layer: Single Tap Play/Pause, Double-Tap Left (-10s) / Right (+10s)
+                let lastTapTime = 0;
+                document.getElementById('cinemaTouchLayer').addEventListener('click', (e) => {
+                  const now = Date.now();
+                  const rect = e.currentTarget.getBoundingClientRect();
+                  const relX = (e.clientX - rect.left) / rect.width;
+
+                  if (now - lastTapTime < 280) {
+                    if (relX < 0.38) {
+                      triggerSeekRipple('left', -10);
+                    } else if (relX > 0.62) {
+                      triggerSeekRipple('right', 10);
+                    } else {
+                      toggleCinemaFullScreen();
+                    }
+                    lastTapTime = 0;
+                    return;
+                  }
+                  lastTapTime = now;
+                  togglePlayPause();
+                });
+
+                wrap.addEventListener('mousemove', wakePlayerUi);
+                wrap.addEventListener('touchstart', wakePlayerUi, { passive: true });
+
+                document.getElementById('btnPlayPause').addEventListener('click', togglePlayPause);
+                document.getElementById('btnSeekBack').addEventListener('click', () => triggerSeekRipple('left', -10));
+                document.getElementById('btnSeekForward').addEventListener('click', () => triggerSeekRipple('right', 10));
+
+                const volSlider = document.getElementById('volSlider');
+                const svgVolIcon = document.getElementById('svgVolIcon');
+                document.getElementById('btnMuteToggle').addEventListener('click', () => {
+                  videoEl.muted = !videoEl.muted;
+                  svgVolIcon.innerHTML = videoEl.muted
+                    ? '<path d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z"/>'
+                    : '<path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02z"/>';
+                });
+                volSlider.addEventListener('input', (e) => {
+                  videoEl.volume = parseFloat(e.target.value);
+                  videoEl.muted = videoEl.volume === 0;
+                });
+
                 document.getElementById('playbackSpeedSelect').addEventListener('change', (e) => {
                   videoEl.playbackRate = parseFloat(e.target.value) || 1.0;
+                  wakePlayerUi();
+                });
+
+                document.getElementById('btnCinemaFullScreen').addEventListener('click', toggleCinemaFullScreen);
+                document.getElementById('btnRotateLandscape').addEventListener('click', toggleLandscapeRotation);
+
+                // Keyboard Shortcuts (Space = Play/Pause, Arrows = Seek, F = Full Screen)
+                document.addEventListener('keydown', (e) => {
+                  if (!wrap.classList.contains('active')) return;
+                  if (['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName)) return;
+                  if (e.code === 'Space') { e.preventDefault(); togglePlayPause(); }
+                  else if (e.code === 'ArrowLeft') { e.preventDefault(); triggerSeekRipple('left', -10); }
+                  else if (e.code === 'ArrowRight') { e.preventDefault(); triggerSeekRipple('right', 10); }
+                  else if (e.key === 'f' || e.key === 'F') { e.preventDefault(); toggleCinemaFullScreen(); }
                 });
 
                 document.getElementById('tabBtnUser').addEventListener('click', () => switchTutorialTab('user'));
@@ -2043,14 +2150,14 @@ jobs:
                 });
 
                 document.getElementById('btnFullScreen').addEventListener('click', () => {
-                  if (document.getElementById('playerWrap').classList.contains('active')) {
+                  if (wrap.classList.contains('active')) {
                     toggleCinemaFullScreen();
                   } else if (document.documentElement.requestFullscreen) {
                     document.documentElement.requestFullscreen();
                   }
                 });
                 document.getElementById('btnFreeScreen').addEventListener('click', () => {
-                  document.getElementById('playerWrap').classList.remove('cinema-fullscreen', 'force-landscape');
+                  wrap.classList.remove('css-fullscreen', 'landscape-rotated');
                   if (document.fullscreenElement && document.exitFullscreen) document.exitFullscreen();
                 });
 
@@ -2111,7 +2218,7 @@ jobs:
                   if (val) copyTextSafe(val, "Session Key copied to clipboard!");
                 });
                 document.getElementById('btnLockDevice').addEventListener('click', () => {
-                  try { localStorage.setItem('vlock_admin_expiry', '0'); } catch (e) {}
+                  localStorage.setItem('vlock_admin_expiry', '0');
                   refreshAdminLockUI();
                   document.getElementById('superuserModal').classList.remove('show');
                 });
