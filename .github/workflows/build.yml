@@ -73,7 +73,7 @@ jobs:
           enc_d_hex = (enc.update(d_raw32) + enc.finalize()).hex()
 
           # =====================================================================
-          # 2. SERVICE WORKER (PARALLEL MULTI-CLIENT 64-BIT VIDEO STREAMING)
+          # 2. SERVICE WORKER (LARGE FILE FALLBACK STREAMING)
           # =====================================================================
           sw_js = r'''self.addEventListener('install', (event) => {
             self.skipWaiting();
@@ -104,7 +104,7 @@ jobs:
                 if (parts[1]) end = Math.min(totalSize - 1, parseInt(parts[1], 10));
               }
 
-              const maxChunk = 2 * 1024 * 1024;
+              const maxChunk = 4 * 1024 * 1024;
               if (end - start + 1 > maxChunk) {
                 end = start + maxChunk - 1;
                 isPartial = true;
@@ -115,15 +115,11 @@ jobs:
                 return new Response('Stream closed', { status: 404 });
               }
 
-              // Query ALL clients in parallel so inactive/launcher tabs never cause a 15-30s timeout or black screen
               const chunkBuffer = await new Promise((resolve, reject) => {
                 let settled = false;
-                let failCount = 0;
+                let failed = 0;
                 const timer = setTimeout(() => {
-                  if (!settled) {
-                    settled = true;
-                    reject(new Error('Stream timeout'));
-                  }
+                  if (!settled) { settled = true; reject(new Error('Stream timeout')); }
                 }, 8000);
 
                 clientsList.forEach((client) => {
@@ -135,18 +131,18 @@ jobs:
                       clearTimeout(timer);
                       resolve(e.data.buffer);
                     } else {
-                      failCount++;
-                      if (failCount >= clientsList.length) {
+                      failed++;
+                      if (failed >= clientsList.length) {
                         settled = true;
                         clearTimeout(timer);
-                        reject(new Error('Session not found'));
+                        reject(new Error('Read error'));
                       }
                     }
                   };
                   try {
                     client.postMessage({ type: 'VLOCK_STREAM_PULL', sid, start, end }, [channel.port2]);
                   } catch (err) {
-                    failCount++;
+                    failed++;
                   }
                 });
               });
@@ -286,46 +282,107 @@ jobs:
               }
 
               /* ========================================================= */
-              /* 4-CORNER CINEMA PLAYER LAYOUT (UNOBSTRUCTED NATIVE VIDEO) */
+              /* STRICT 4-CORNER WEB PLAYER (ZERO OVERLAPPING OPTIONS)     */
               /* ========================================================= */
               .player-wrap {
-                display: none; flex-direction: column; justify-content: space-between; gap: 10px;
-                background: #05080c; border-radius: 12px; padding: 12px; border: 2px solid var(--green-border);
-                margin-top: 8px; box-shadow: 0 12px 32px rgba(0,0,0,0.85);
+                display: none; flex-direction: column; gap: 10px; background: #05080c;
+                border-radius: 12px; padding: 12px; border: 2px solid var(--green-border);
+                margin-top: 8px; width: 100%; box-shadow: 0 12px 32px rgba(0,0,0,0.85);
               }
               .player-wrap.active { display: flex; }
 
-              /* Top 2 Corners Row & Bottom 2 Corners Row */
-              .player-corners-row {
-                display: flex; align-items: center; justify-content: space-between; gap: 10px;
-                flex-wrap: wrap; width: 100%;
+              /* Fullscreen & Landscape Modes keep all 4 corners cleanly separated */
+              .player-wrap:fullscreen, .player-wrap:-webkit-full-screen {
+                width: 100vw !important; height: 100vh !important; max-width: none !important;
+                background: #000000 !important; padding: 10px !important; border: none !important;
+                border-radius: 0 !important; justify-content: space-between !important; z-index: 999999 !important;
               }
-              .corner-pod {
-                display: flex; align-items: center; gap: 6px; background: #0d1117;
-                border: 1px solid #21262d; border-radius: 8px; padding: 6px 10px; flex-wrap: wrap;
+              .player-wrap.cinema-fullscreen {
+                position: fixed !important; inset: 0 !important; width: 100vw !important; height: 100vh !important;
+                max-width: none !important; background: #000000 !important; padding: 10px !important;
+                border: none !important; border-radius: 0 !important; justify-content: space-between !important;
+                z-index: 999999 !important;
               }
-              .corner-title {
-                font-size: 12.5px; color: #3fb950; font-weight: 700; max-width: 240px;
-                white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-              }
-              .corner-badge {
-                font-size: 10.5px; background: #143d29; color: #3fb950; padding: 3px 7px;
-                border-radius: 5px; font-weight: 800; border: 1px solid #2ea043;
-              }
-              .corner-select {
-                background: #21262d; color: #ffffff; border: 1px solid #30363d; border-radius: 6px;
-                padding: 5px 8px; font-size: 11.5px; font-weight: 700; cursor: pointer; outline: none;
+              .player-wrap.landscape-rotated {
+                position: fixed !important; top: 50% !important; left: 50% !important;
+                width: 100vh !important; height: 100vw !important; max-width: none !important;
+                transform: translate(-50%, -50%) rotate(90deg) !important;
+                background: #000000 !important; padding: 8px !important; border: none !important;
+                border-radius: 0 !important; justify-content: space-between !important; z-index: 999999 !important;
               }
 
-              /* Center Video Frame — 100% Uncovered & Unobstructed */
-              .player-center-stage {
+              /* 2-Column Corner Bar (Left Corner & Right Corner never overlap) */
+              .corner-bar {
+                display: grid; grid-template-columns: 1fr auto; align-items: center;
+                gap: 8px; width: 100%;
+              }
+              .corner-box {
+                display: flex; align-items: center; gap: 6px; background: #0d1117;
+                border: 1px solid #21262d; border-radius: 8px; padding: 6px 10px;
+              }
+              .corner-box.left-corner { justify-self: start; max-width: 100%; overflow: hidden; }
+              .corner-box.right-corner { justify-self: end; flex-shrink: 0; }
+
+              .corner-title {
+                font-size: 12px; color: #3fb950; font-weight: 700;
+                white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 180px;
+              }
+              @media (min-width: 600px) { .corner-title { max-width: 340px; } }
+
+              .corner-badge {
+                font-size: 10px; background: #143d29; color: #3fb950; padding: 3px 6px;
+                border-radius: 4px; font-weight: 800; border: 1px solid #2ea043; flex-shrink: 0;
+              }
+              .corner-btn {
+                background: #21262d; border: 1px solid #30363d; color: #ffffff; border-radius: 6px;
+                padding: 6px 9px; font-size: 11.5px; font-weight: 700; cursor: pointer;
+                display: inline-flex; align-items: center; gap: 4px; white-space: nowrap;
+              }
+              .corner-btn:hover { background: #30363d; }
+              .corner-btn.green { background: #2ea043; border-color: #3fb950; }
+              .corner-btn.red { background: #da3633; border-color: #f85149; }
+              .corner-btn.purple { background: #8957e5; border-color: #a371f7; }
+
+              .corner-select {
+                background: #21262d; color: #ffffff; border: 1px solid #30363d; border-radius: 6px;
+                padding: 5px 7px; font-size: 11.5px; font-weight: 700; cursor: pointer; outline: none;
+              }
+
+              /* Dedicated Video Stage with Explicit Pixel Height so Hardware Video Surface Never Collapses */
+              .video-center-frame {
                 width: 100%; background: #000000; border-radius: 8px; overflow: hidden;
-                display: flex; align-items: center; justify-content: center; border: 1px solid #161b22;
+                border: 1px solid #21262d; display: block;
               }
-              video {
-                width: 100%; max-height: 480px; border-radius: 6px; background: #000000; outline: none;
+              #vlockVideoPlayer {
+                display: block !important;
+                width: 100% !important;
+                height: 260px !important;
+                background: #000000 !important;
+                object-fit: contain;
+                outline: none;
               }
-              video.zoom-cover { object-fit: cover; }
+              @media (min-width: 640px) {
+                #vlockVideoPlayer { height: 460px !important; }
+              }
+              #vlockVideoPlayer.zoom-cover { object-fit: cover !important; }
+
+              .player-wrap:fullscreen .video-center-frame,
+              .player-wrap:-webkit-full-screen .video-center-frame,
+              .player-wrap.cinema-fullscreen .video-center-frame,
+              .player-wrap.landscape-rotated .video-center-frame {
+                flex: 1; display: flex; align-items: center; justify-content: center;
+              }
+              .player-wrap:fullscreen #vlockVideoPlayer,
+              .player-wrap:-webkit-full-screen #vlockVideoPlayer,
+              .player-wrap.cinema-fullscreen #vlockVideoPlayer {
+                height: calc(100vh - 115px) !important;
+              }
+              .player-wrap.landscape-rotated #vlockVideoPlayer {
+                height: calc(100vw - 110px) !important;
+              }
+
+              /* Hide Native Download Option */
+              video::-internal-media-controls-download-button { display: none !important; }
 
               .progress-bar { width: 100%; height: 10px; background: #140507; border-radius: 5px; overflow: hidden; border: 1px solid #42141b; }
               .progress-fill { height: 100%; width: 0%; background: var(--red-bright); transition: width 0.1s; }
@@ -463,61 +520,64 @@ jobs:
                 </button>
 
                 <!-- ======================================================= -->
-                <!-- 4-CORNER WEB PLAYER (UNOBSTRUCTED NATIVE VIDEO STAGE)   -->
+                <!-- 4-CORNER WEB PLAYER (ZERO OVERLAPPING CONTROLS)         -->
                 <!-- ======================================================= -->
                 <div class="player-wrap" id="playerWrap" oncontextmenu="return false;">
 
-                  <!-- TOP 2 CORNERS (TOP-LEFT & TOP-RIGHT) -->
-                  <div class="player-corners-row">
-                    <!-- TOP-LEFT CORNER: Title + Protected Badge -->
-                    <div class="corner-pod">
-                      <span class="corner-badge">🔒 No-Download</span>
-                      <span id="nowPlayingLabel" class="corner-title">Playing Decrypted Stream</span>
+                  <!-- TOP 2 CORNERS -->
+                  <div class="corner-bar">
+                    <!-- CORNER 1: TOP-LEFT (Protected Status + File Title) -->
+                    <div class="corner-box left-corner">
+                      <span class="corner-badge">🔒 Protected</span>
+                      <span id="nowPlayingLabel" class="corner-title">Now Playing</span>
                     </div>
 
-                    <!-- TOP-RIGHT CORNER: Direct Memory Mode Fix + Close Player -->
-                    <div class="corner-pod">
-                      <button type="button" class="btn btn-purple" id="btnDirectBlobMode" style="padding:5px 10px;font-size:11px;" title="Switch to Direct Memory Mode if stream screen is black">
-                        ⚡ Direct Memory Mode
+                    <!-- CORNER 2: TOP-RIGHT (Rotate Landscape + Close Player) -->
+                    <div class="corner-box right-corner">
+                      <button type="button" class="corner-btn purple" id="btnRotateLandscape" title="Rotate Landscape">
+                        🔄 Rotate
                       </button>
-                      <button type="button" class="btn btn-red" id="btnCloseStream" style="padding:5px 10px;font-size:11px;">
+                      <button type="button" class="corner-btn red" id="btnCloseStream" title="Close Player">
                         ✕ Close
                       </button>
                     </div>
                   </div>
 
-                  <!-- CENTER VIDEO STAGE (100% UNCOVERED NATIVE BROWSER PLAYER) -->
-                  <div class="player-center-stage">
+                  <!-- CENTER VIDEO FRAME (EXPLICIT PIXEL HEIGHT, 100% UNOBSTRUCTED) -->
+                  <div class="video-center-frame">
                     <video
                       id="vlockVideoPlayer"
                       controls
                       playsinline
+                      webkit-playsinline
+                      preload="auto"
                       controlsList="nodownload"
+                      disablePictureInPicture
                       oncontextmenu="return false;"
                     ></video>
                   </div>
 
-                  <!-- BOTTOM 2 CORNERS (BOTTOM-LEFT & BOTTOM-RIGHT) -->
-                  <div class="player-corners-row">
-                    <!-- BOTTOM-LEFT CORNER: Seek -10s / +10s + Fit/Zoom -->
-                    <div class="corner-pod">
-                      <button type="button" class="btn btn-dark" id="btnSeekBack10" style="padding:6px 10px;font-size:11.5px;">⏪ -10s</button>
-                      <button type="button" class="btn btn-dark" id="btnSeekFwd10" style="padding:6px 10px;font-size:11.5px;">⏩ +10s</button>
-                      <button type="button" class="btn btn-dark" id="btnToggleZoom" style="padding:6px 10px;font-size:11.5px;">📐 Fit: Standard</button>
+                  <!-- BOTTOM 2 CORNERS -->
+                  <div class="corner-bar">
+                    <!-- CORNER 3: BOTTOM-LEFT (Seek -10s / +10s + Fit/Zoom) -->
+                    <div class="corner-box left-corner">
+                      <button type="button" class="corner-btn" id="btnSeekBack10">⏪ -10s</button>
+                      <button type="button" class="corner-btn" id="btnSeekFwd10">⏩ +10s</button>
+                      <button type="button" class="corner-btn" id="btnToggleZoom">📐 Fit</button>
                     </div>
 
-                    <!-- BOTTOM-RIGHT CORNER: Speed + Loop + Full Screen -->
-                    <div class="corner-pod">
+                    <!-- CORNER 4: BOTTOM-RIGHT (Speed + Loop + Full Screen) -->
+                    <div class="corner-box right-corner">
                       <select id="extraSpeedSelect" class="corner-select" title="Playback Speed">
-                        <option value="0.5">0.5x Speed</option>
-                        <option value="0.75">0.75x Speed</option>
-                        <option value="1" selected>1.0x Normal</option>
-                        <option value="1.25">1.25x Speed</option>
-                        <option value="1.5">1.5x Speed</option>
-                        <option value="2">2.0x Speed</option>
+                        <option value="0.5">0.5x</option>
+                        <option value="0.75">0.75x</option>
+                        <option value="1" selected>1.0x</option>
+                        <option value="1.25">1.25x</option>
+                        <option value="1.5">1.5x</option>
+                        <option value="2">2.0x</option>
                       </select>
-                      <button type="button" class="btn btn-dark" id="btnToggleLoop" style="padding:6px 10px;font-size:11.5px;">🔁 Loop: Off</button>
-                      <button type="button" class="btn btn-green" id="btnNativeFullScreen" style="padding:6px 12px;font-size:11.5px;">
+                      <button type="button" class="corner-btn" id="btnToggleLoop">🔁 Loop: Off</button>
+                      <button type="button" class="corner-btn green" id="btnNativeFullScreen">
                         ⛶ Full Screen
                       </button>
                     </div>
@@ -670,7 +730,7 @@ jobs:
                       </svg>
                     </div>
                     <h4>3. Paste Key & Watch</h4>
-                    <p>Click <b>Paste Key</b> to paste your key from the Bot, then tap <b>Decrypt & Watch</b>. The video plays right inside the native 4-corner player!</p>
+                    <p>Click <b>Paste Key</b> to paste your key from the Bot, then tap <b>Decrypt & Watch</b>. The video plays right inside the 4-corner player!</p>
                   </div>
                 </div>
 
@@ -867,7 +927,6 @@ jobs:
               let verifiedSuPassword = "";
               let activeStreamSessions = {};
               let currentObjectUrl = null;
-              let lastDecryptedSessionParams = null;
               let autoPlayPendingAfterPick = false;
 
               function hexToBytes(hex) {
@@ -1015,7 +1074,7 @@ jobs:
               }
 
               // =========================================================================
-              // SERVICE WORKER REGISTRATION (FOR LOCAL STREAMING)
+              // SERVICE WORKER REGISTRATION (FOR MULTI-GIGABYTE FILES)
               // =========================================================================
               if ('serviceWorker' in navigator) {
                 navigator.serviceWorker.register('./sw.js').catch(() => {});
@@ -1052,11 +1111,43 @@ jobs:
                 });
               }
 
-              function onVlockFilePicked(file, showPopup = true) {
+              // Also support legacy Base64 .html files if user picks an older file
+              async function normalizePickedFile(file) {
+                try {
+                  const headProbe = new TextDecoder().decode(await file.slice(0, 1024).arrayBuffer());
+                  if (headProbe.includes('vlock-b64-chunk')) {
+                    const fullText = await file.text();
+                    const parts = [];
+                    const hMatch = /<script[^>]*id="vlock-b64-header"[^>]*>([\s\S]*?)<\/script>/.exec(fullText);
+                    if (hMatch) {
+                      const bin = atob(hMatch[1].trim());
+                      const u8 = new Uint8Array(bin.length);
+                      for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+                      parts.push(new Blob([u8]));
+                    }
+                    const regex = /<script[^>]*class="vlock-b64-chunk"[^>]*>([\s\S]*?)<\/script>/g;
+                    let m;
+                    while ((m = regex.exec(fullText)) !== null) {
+                      const bin = atob(m[1].trim());
+                      const u8 = new Uint8Array(bin.length);
+                      for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+                      parts.push(new Blob([u8]));
+                    }
+                    if (parts.length > 0) {
+                      const b = new Blob(parts, { type: 'application/octet-stream' });
+                      b.name = file.name;
+                      return b;
+                    }
+                  }
+                } catch (e) {}
+                return file;
+              }
+
+              async function onVlockFilePicked(file, showPopup = true) {
                 if (!file) return;
-                selectedVlockFile = file;
-                saveVideoToIndexedDb(file.name, file);
-                const sizeMb = (file.size / (1024 * 1024)).toFixed(1);
+                selectedVlockFile = await normalizePickedFile(file);
+                saveVideoToIndexedDb(file.name, selectedVlockFile);
+                const sizeMb = (selectedVlockFile.size / (1024 * 1024)).toFixed(1);
                 document.getElementById('viewerFileTitle').textContent = `Ready to Unlock: ${file.name} (${sizeMb} MB)`;
 
                 const currentKey = document.getElementById('viewerKeyInput').value.trim();
@@ -1323,70 +1414,66 @@ jobs:
                 }
               }
 
+              // Hardware-safe MIME mapping so .mkv / .mov / .mp4 always initialize the video frame decoder
               function resolveMimeType(ext) {
                 const e = ext.toLowerCase();
-                const map = {
-                  '.mp4': 'video/mp4', '.m4v': 'video/mp4', '.mkv': 'video/x-matroska', '.webm': 'video/webm',
-                  '.avi': 'video/x-msvideo', '.mov': 'video/quicktime', '.ts': 'video/mp2t', '.mp3': 'audio/mpeg',
-                  '.flac': 'audio/flac', '.wav': 'audio/wav', '.aac': 'audio/aac', '.ogg': 'audio/ogg', '.m4a': 'audio/mp4'
-                };
-                return map[e] || 'video/mp4';
+                if (e === '.webm') return 'video/webm';
+                if (e === '.mp3') return 'audio/mpeg';
+                if (e === '.flac') return 'audio/flac';
+                if (e === '.wav') return 'audio/wav';
+                if (e === '.aac') return 'audio/aac';
+                if (e === '.ogg') return 'audio/ogg';
+                if (e === '.m4a') return 'audio/mp4';
+                return 'video/mp4';
               }
 
-              async function triggerNativeVideoFullScreen() {
+              // Fullscreen & Landscape Controls for the 4-Corner Player
+              async function togglePlayerFullScreen() {
+                const playerWrap = document.getElementById('playerWrap');
                 const videoEl = document.getElementById('vlockVideoPlayer');
-                try {
-                  if (document.fullscreenElement) {
-                    await document.exitFullscreen();
-                    return;
+
+                const isNativeFs = !!(document.fullscreenElement || document.webkitFullscreenElement);
+                const isCustomFs = playerWrap.classList.contains('cinema-fullscreen') || playerWrap.classList.contains('landscape-rotated');
+
+                if (isNativeFs || isCustomFs) {
+                  if (document.exitFullscreen && document.fullscreenElement) {
+                    await document.exitFullscreen().catch(() => {});
+                  } else if (document.webkitExitFullscreen && document.webkitFullscreenElement) {
+                    document.webkitExitFullscreen();
                   }
-                  if (videoEl.requestFullscreen) {
-                    await videoEl.requestFullscreen();
-                  } else if (videoEl.webkitRequestFullscreen) {
-                    videoEl.webkitRequestFullscreen();
+                  playerWrap.classList.remove('cinema-fullscreen', 'landscape-rotated');
+                  if (screen.orientation && screen.orientation.unlock) {
+                    try { screen.orientation.unlock(); } catch (e) {}
+                  }
+                  return;
+                }
+
+                try {
+                  if (playerWrap.requestFullscreen) {
+                    await playerWrap.requestFullscreen();
+                  } else if (playerWrap.webkitRequestFullscreen) {
+                    playerWrap.webkitRequestFullscreen();
                   } else if (videoEl.webkitEnterFullscreen) {
                     videoEl.webkitEnterFullscreen();
+                    return;
+                  } else {
+                    playerWrap.classList.add('cinema-fullscreen');
                   }
                   if (screen.orientation && screen.orientation.lock) {
-                    screen.orientation.lock('landscape').catch(() => {});
+                    await screen.orientation.lock('landscape').catch(() => {});
                   }
                 } catch (e) {
-                  if (videoEl.webkitEnterFullscreen) {
-                    try { videoEl.webkitEnterFullscreen(); } catch (err) {}
-                  }
+                  playerWrap.classList.add('cinema-fullscreen');
                 }
               }
 
-              async function playViaDirectMemoryBlob(params) {
-                const { file, cryptoKey, nonce8, payloadOffset, payloadSize, mime } = params;
-                const btn = document.getElementById('btnDirectBlobMode');
-                btn.disabled = true;
-                btn.textContent = "⏳ Loading Memory Stream...";
-                try {
-                  const blobParts = [];
-                  const chunkSize = 16 * 1024 * 1024;
-                  let offset = 0;
-                  while (offset < payloadSize) {
-                    const len = Math.min(chunkSize, payloadSize - offset);
-                    const encChunk = await file.slice(payloadOffset + offset, payloadOffset + offset + len).arrayBuffer();
-                    const decChunk = await crypto.subtle.decrypt(
-                      { name: 'AES-CTR', counter: makeCtrIv(nonce8, Math.floor(offset / 16)), length: 64 },
-                      cryptoKey,
-                      encChunk
-                    );
-                    blobParts.push(new Blob([decChunk]));
-                    offset += len;
-                  }
-                  if (currentObjectUrl) URL.revokeObjectURL(currentObjectUrl);
-                  currentObjectUrl = URL.createObjectURL(new Blob(blobParts, { type: mime }));
-                  const videoEl = document.getElementById('vlockVideoPlayer');
-                  videoEl.src = currentObjectUrl;
-                  videoEl.play().catch(() => {});
-                  btn.textContent = "✓ Direct Memory Active";
-                } catch (e) {
-                  alert("Direct Memory Mode error: " + e.message);
-                  btn.textContent = "⚡ Direct Memory Mode";
-                  btn.disabled = false;
+              function toggleLandscapeMode() {
+                const playerWrap = document.getElementById('playerWrap');
+                if (playerWrap.classList.contains('landscape-rotated')) {
+                  playerWrap.classList.remove('landscape-rotated');
+                } else {
+                  playerWrap.classList.remove('cinema-fullscreen');
+                  playerWrap.classList.add('landscape-rotated');
                 }
               }
 
@@ -1406,10 +1493,10 @@ jobs:
                 const btn = document.getElementById('btnDecryptWatch');
                 const modalBtn = document.getElementById('btnModalDecryptWatch');
                 btn.disabled = true;
-                btn.textContent = "Verifying Key & Preparing Stream...";
+                btn.textContent = "Verifying Key & Preparing Video...";
                 if (modalBtn) {
                   modalBtn.disabled = true;
-                  modalBtn.textContent = "Verifying Key & Preparing Stream...";
+                  modalBtn.textContent = "Verifying Key & Preparing Video...";
                 }
 
                 try {
@@ -1435,7 +1522,7 @@ jobs:
                     }
                   }
                   if (vlockStart === -1) {
-                    throw new Error("Not a valid .vlock / .html encrypted file.");
+                    throw new Error("Not a valid VLock encrypted file.");
                   }
 
                   const headBuf = await selectedVlockFile.slice(vlockStart, vlockStart + 66).arrayBuffer();
@@ -1515,21 +1602,35 @@ jobs:
                   const mime = resolveMimeType(ext);
                   const playerWrap = document.getElementById('playerWrap');
                   playerWrap.classList.add('active');
-                  document.getElementById('nowPlayingLabel').textContent = selectedVlockFile.name;
-                  const directBtn = document.getElementById('btnDirectBlobMode');
-                  directBtn.disabled = false;
-                  directBtn.textContent = "⚡ Direct Memory Mode";
-
-                  lastDecryptedSessionParams = { file: selectedVlockFile, cryptoKey, nonce8, payloadOffset, payloadSize, mime };
+                  document.getElementById('nowPlayingLabel').textContent = selectedVlockFile.name.replace(/\.(html|htm|vlock)$/i, '');
                   const videoEl = document.getElementById('vlockVideoPlayer');
 
-                  if (navigator.serviceWorker && navigator.serviceWorker.controller) {
+                  // Direct hardware-accelerated Blob decryption for videos up to 700 MB so MP4/MKV headers never black-screen
+                  if (payloadSize <= 700 * 1024 * 1024 || !(navigator.serviceWorker && navigator.serviceWorker.controller)) {
+                    const blobParts = [];
+                    const chunkSize = 16 * 1024 * 1024;
+                    let offset = 0;
+                    while (offset < payloadSize) {
+                      const len = Math.min(chunkSize, payloadSize - offset);
+                      const encChunk = await selectedVlockFile.slice(payloadOffset + offset, payloadOffset + offset + len).arrayBuffer();
+                      const decChunk = await crypto.subtle.decrypt(
+                        { name: 'AES-CTR', counter: makeCtrIv(nonce8, Math.floor(offset / 16)), length: 64 },
+                        cryptoKey,
+                        encChunk
+                      );
+                      blobParts.push(new Blob([decChunk]));
+                      offset += len;
+                    }
+                    currentObjectUrl = URL.createObjectURL(new Blob(blobParts, { type: mime }));
+                    videoEl.src = currentObjectUrl;
+                    videoEl.load();
+                    await videoEl.play().catch(() => {});
+                  } else {
                     const sid = Math.random().toString(36).slice(2) + Date.now().toString(36);
                     activeStreamSessions[sid] = { file: selectedVlockFile, cryptoKey, nonce8, payloadOffset, payloadSize };
-                    videoEl.src = `./__vlock_stream__/Episode${ext}?sid=${sid}&size=${payloadSize}&mime=${encodeURIComponent(mime)}`;
-                    videoEl.play().catch(() => {});
-                  } else {
-                    await playViaDirectMemoryBlob(lastDecryptedSessionParams);
+                    videoEl.src = `./__vlock_stream__/Episode.mp4?sid=${sid}&size=${payloadSize}&mime=${encodeURIComponent(mime)}`;
+                    videoEl.load();
+                    await videoEl.play().catch(() => {});
                   }
 
                   playerWrap.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -1546,6 +1647,11 @@ jobs:
               }
 
               function closePlayerStream() {
+                const playerWrap = document.getElementById('playerWrap');
+                playerWrap.classList.remove('active', 'cinema-fullscreen', 'landscape-rotated');
+                if (document.fullscreenElement && document.exitFullscreen) {
+                  document.exitFullscreen().catch(() => {});
+                }
                 const videoEl = document.getElementById('vlockVideoPlayer');
                 videoEl.pause();
                 videoEl.removeAttribute('src');
@@ -1555,13 +1661,11 @@ jobs:
                   currentObjectUrl = null;
                 }
                 activeStreamSessions = {};
-                lastDecryptedSessionParams = null;
-                document.getElementById('playerWrap').classList.remove('active');
               }
 
               async function restoreOriginalMediaLocally(vlockFile, cryptoKey, nonce8, payloadOffset, payloadSize, ext) {
                 const blobParts = [];
-                const chunkSize = 8 * 1024 * 1024;
+                const chunkSize = 16 * 1024 * 1024;
                 let offset = 0;
                 while (offset < payloadSize) {
                   const len = Math.min(chunkSize, payloadSize - offset);
@@ -1696,6 +1800,7 @@ jobs:
                   const outHtmlName = `${stem}.html`;
                   const redirectTarget = `${window.location.origin}${window.location.pathname}?play=${encodeURIComponent(outHtmlName)}`;
 
+                  // Instant 2 KB Launcher Header with <plaintext> barrier so browser never parses binary tail as HTML
                   const launcherHtml =
                     `<!DOCTYPE html><html><head><meta charset="UTF-8">` +
                     `<meta name="viewport" content="width=device-width,initial-scale=1.0">` +
@@ -1705,9 +1810,9 @@ jobs:
                     `</head><body style="background:#0d1117;color:#3fb950;font-family:system-ui,sans-serif;display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;margin:0;">` +
                     `<h3>Opening VLock Player...</h3>` +
                     `<p style="color:#c9d1d9;font-size:13px;margin-top:8px;"><a href="${redirectTarget}" style="color:#58a6ff;">Tap here if not redirected automatically</a></p>` +
-                    `</body></html>`;
+                    `</body></html><plaintext style="display:none">`;
                   const padCount = Math.max(0, 2048 - launcherHtml.length);
-                  const launcherBytes = enc.encode(launcherHtml + `<!--${"-".repeat(padCount)}-->`);
+                  const launcherBytes = enc.encode(launcherHtml + " ".repeat(padCount));
 
                   const headerFixed = new Uint8Array(66);
                   headerFixed.set(enc.encode("VLCK"), 0);
@@ -1721,7 +1826,7 @@ jobs:
                   const cryptoKey = await crypto.subtle.importKey('raw', masterKey, 'AES-CTR', false, ['encrypt']);
                   const blobParts = [new Blob([launcherBytes]), new Blob([headerFixed]), new Blob([slotsBuffer])];
 
-                  const chunkSize = 8 * 1024 * 1024;
+                  const chunkSize = 16 * 1024 * 1024;
                   const totalSize = selectedRawMediaFile.size;
                   let offset = 0;
 
@@ -1814,11 +1919,6 @@ jobs:
                 // 4-Corner Player Controls
                 const videoEl = document.getElementById('vlockVideoPlayer');
 
-                document.getElementById('btnDirectBlobMode').addEventListener('click', () => {
-                  if (lastDecryptedSessionParams) {
-                    playViaDirectMemoryBlob(lastDecryptedSessionParams);
-                  }
-                });
                 document.getElementById('btnSeekBack10').addEventListener('click', () => {
                   videoEl.currentTime = Math.max(0, (videoEl.currentTime || 0) - 10);
                 });
@@ -1830,13 +1930,14 @@ jobs:
                 });
                 document.getElementById('btnToggleZoom').addEventListener('click', (e) => {
                   const isZoom = videoEl.classList.toggle('zoom-cover');
-                  e.currentTarget.textContent = isZoom ? "📐 Fit: Zoom Fill" : "📐 Fit: Standard";
+                  e.currentTarget.textContent = isZoom ? "📐 Zoom: Fill" : "📐 Fit";
                 });
                 document.getElementById('btnToggleLoop').addEventListener('click', (e) => {
                   videoEl.loop = !videoEl.loop;
                   e.currentTarget.textContent = videoEl.loop ? "🔁 Loop: On" : "🔁 Loop: Off";
                 });
-                document.getElementById('btnNativeFullScreen').addEventListener('click', triggerNativeVideoFullScreen);
+                document.getElementById('btnNativeFullScreen').addEventListener('click', togglePlayerFullScreen);
+                document.getElementById('btnRotateLandscape').addEventListener('click', toggleLandscapeMode);
 
                 document.getElementById('tabBtnUser').addEventListener('click', () => switchTutorialTab('user'));
                 document.getElementById('tabBtnAdmin').addEventListener('click', () => switchTutorialTab('admin'));
@@ -1853,12 +1954,13 @@ jobs:
 
                 document.getElementById('btnFullScreen').addEventListener('click', () => {
                   if (document.getElementById('playerWrap').classList.contains('active')) {
-                    triggerNativeVideoFullScreen();
+                    togglePlayerFullScreen();
                   } else if (document.documentElement.requestFullscreen) {
                     document.documentElement.requestFullscreen();
                   }
                 });
                 document.getElementById('btnFreeScreen').addEventListener('click', () => {
+                  document.getElementById('playerWrap').classList.remove('cinema-fullscreen', 'landscape-rotated');
                   if (document.fullscreenElement && document.exitFullscreen) document.exitFullscreen();
                 });
 
