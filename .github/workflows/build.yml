@@ -73,7 +73,7 @@ jobs:
           enc_d_hex = (enc.update(d_raw32) + enc.finalize()).hex()
 
           # =====================================================================
-          # 2. SERVICE WORKER (1 MB CHUNKED 64-BIT VIDEO STREAMING ENGINE)
+          # 2. SERVICE WORKER (ORIGINAL FAST 64-BIT VIDEO STREAMING)
           # =====================================================================
           sw_js = r'''self.addEventListener('install', (event) => {
             self.skipWaiting();
@@ -92,10 +92,6 @@ jobs:
               const totalSize = parseInt(url.searchParams.get('size') || '0', 10);
               const mime = url.searchParams.get('mime') || 'video/mp4';
               const rangeHeader = event.request.headers.get('Range');
-
-              if (totalSize <= 0) {
-                return new Response('Stream closed', { status: 404 });
-              }
 
               let start = 0;
               let end = totalSize - 1;
@@ -124,10 +120,10 @@ jobs:
                 try {
                   chunkBuffer = await new Promise((resolve, reject) => {
                     const channel = new MessageChannel();
-                    const timer = setTimeout(() => reject(new Error('Stream timeout')), 10000);
+                    const timer = setTimeout(() => reject(new Error('Stream timeout')), 15000);
                     channel.port1.onmessage = (e) => {
                       clearTimeout(timer);
-                      if (e.data && e.data.ok && e.data.buffer) resolve(e.data.buffer);
+                      if (e.data && e.data.ok) resolve(e.data.buffer);
                       else reject(new Error('Read error'));
                     };
                     client.postMessage({ type: 'VLOCK_STREAM_PULL', sid, start, end }, [channel.port2]);
@@ -145,8 +141,7 @@ jobs:
                 'Content-Type': mime,
                 'Accept-Ranges': 'bytes',
                 'Content-Length': String(byteLen),
-                'Cache-Control': 'no-store, no-cache, must-revalidate',
-                'Content-Disposition': 'inline'
+                'Cache-Control': 'no-store'
               });
               if (isPartial) {
                 headers.set('Content-Range', `bytes ${start}-${start + byteLen - 1}/${totalSize}`);
@@ -180,7 +175,6 @@ jobs:
                 --red-banner: #42141b;
                 --red-border: #da3633;
                 --red-bright: #ff7b72;
-                --netflix-red: #e50914;
               }
               * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; }
               body { background: var(--bg-dark); color: #ffffff; min-height: 100vh; display: flex; flex-direction: column; }
@@ -277,148 +271,33 @@ jobs:
               }
 
               /* ========================================================= */
-              /* YOUTUBE / NETFLIX CUSTOM STREAMING PLAYER (NO DOWNLOAD!)  */
+              /* BROWSER NATIVE PLAYER + EXTRA FEATURES BAR (NO DOWNLOAD)  */
               /* ========================================================= */
-              .cinema-wrapper {
-                display: none; position: relative; width: 100%; aspect-ratio: 16 / 9; max-height: 540px;
-                background: #000000; border-radius: 12px; overflow: hidden; border: 2px solid #2ea043;
-                margin-top: 6px; user-select: none; -webkit-user-select: none; box-shadow: 0 12px 34px rgba(0,0,0,0.85);
+              .player-wrap {
+                display: none; flex-direction: column; gap: 10px; background: #000000; border-radius: 10px;
+                padding: 12px; border: 2px solid var(--green-border); margin-top: 4px;
               }
-              .cinema-wrapper.active { display: block; }
-              .cinema-wrapper:fullscreen, .cinema-wrapper:-webkit-full-screen {
-                width: 100vw !important; height: 100vh !important; max-height: none !important;
-                border: none !important; border-radius: 0 !important;
-              }
-              .cinema-wrapper.css-fullscreen {
-                position: fixed !important; inset: 0 !important; width: 100vw !important; height: 100vh !important;
-                max-height: none !important; z-index: 999999 !important; border: none !important; border-radius: 0 !important;
-              }
-              .cinema-wrapper.landscape-rotated {
-                position: fixed !important; top: 50% !important; left: 50% !important;
-                width: 100vh !important; height: 100vw !important; max-height: none !important;
-                transform: translate(-50%, -50%) rotate(90deg) !important;
-                z-index: 999999 !important; border: none !important; border-radius: 0 !important;
-              }
+              .player-wrap.active { display: flex; }
 
-              .cinema-video {
-                width: 100%; height: 100%; display: block; background: #000000; object-fit: contain;
-                outline: none; pointer-events: none;
+              video {
+                width: 100%; max-height: 480px; border-radius: 6px; background: #000000; outline: none;
+                display: block;
               }
+              video.zoom-cover { object-fit: cover; }
 
-              /* Interactive Touch / Click Surface */
-              .cinema-touch-layer {
-                position: absolute; inset: 0; z-index: 10; display: flex; align-items: center; justify-content: center;
-                cursor: pointer;
-              }
+              /* Hide Native Browser Download Button Across Chromium / WebKit */
+              video::-internal-media-controls-download-button { display: none !important; }
+              video::-webkit-media-controls-enclosure { overflow: hidden !important; }
 
-              /* Center Play/Pause Pulse Icon & Spinner */
-              .center-play-indicator {
-                width: 68px; height: 68px; border-radius: 50%; background: rgba(0,0,0,0.68);
-                border: 2px solid rgba(255,255,255,0.85); display: flex; align-items: center; justify-content: center;
-                color: #ffffff; font-size: 28px; transition: opacity 0.2s, transform 0.2s; pointer-events: none;
+              .player-extra-bar {
+                display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap;
+                background: #0d1117; border: 1px solid #21262d; border-radius: 8px; padding: 8px 10px;
               }
-              .cinema-wrapper.playing.hide-ui .center-play-indicator { opacity: 0; transform: scale(0.85); }
-              .cinema-wrapper.playing .center-play-indicator { opacity: 0; }
-
-              .buffer-spinner {
-                position: absolute; width: 54px; height: 54px; border: 4px solid rgba(255,255,255,0.2);
-                border-top-color: var(--netflix-red); border-radius: 50%; animation: vspin 0.8s linear infinite;
-                display: none; z-index: 15; pointer-events: none;
+              .extra-group { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+              .extra-select {
+                background: #21262d; color: #ffffff; border: 1px solid #30363d; border-radius: 6px;
+                padding: 6px 9px; font-size: 12px; font-weight: 700; cursor: pointer; outline: none;
               }
-              .cinema-wrapper.buffering .buffer-spinner { display: block; }
-              @keyframes vspin { to { transform: rotate(360deg); } }
-
-              /* Double-Tap Seek Ripple Feedback */
-              .seek-ripple {
-                position: absolute; top: 50%; transform: translateY(-50%); background: rgba(0,0,0,0.72);
-                color: #ffffff; padding: 12px 18px; border-radius: 30px; font-size: 14px; font-weight: 800;
-                pointer-events: none; opacity: 0; transition: opacity 0.2s; z-index: 16;
-              }
-              .seek-ripple.left { left: 12%; }
-              .seek-ripple.right { right: 12%; }
-              .seek-ripple.show { opacity: 1; }
-
-              /* Top Overlay Bar (Title + Protected Badge + Close) */
-              .cinema-topbar {
-                position: absolute; top: 0; left: 0; right: 0; z-index: 20;
-                padding: 12px 16px 28px; background: linear-gradient(to bottom, rgba(0,0,0,0.88), transparent);
-                display: flex; justify-content: space-between; align-items: center; gap: 10px;
-                transition: opacity 0.25s;
-              }
-              .cinema-title {
-                font-size: 13.5px; font-weight: 700; color: #ffffff; text-shadow: 0 1px 4px rgba(0,0,0,0.9);
-                white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-              }
-              .cinema-top-right { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
-              .drm-badge {
-                background: rgba(20, 61, 41, 0.9); border: 1px solid #3fb950; color: #3fb950;
-                font-size: 10.5px; font-weight: 800; padding: 4px 8px; border-radius: 5px;
-              }
-
-              /* Bottom Controls Overlay (YouTube / Netflix Scrubber + Buttons) */
-              .cinema-bottombar {
-                position: absolute; bottom: 0; left: 0; right: 0; z-index: 20;
-                padding: 28px 14px 10px; background: linear-gradient(to top, rgba(0,0,0,0.92), rgba(0,0,0,0.45), transparent);
-                display: flex; flex-direction: column; gap: 8px; transition: opacity 0.25s;
-              }
-              .cinema-wrapper.playing.hide-ui .cinema-topbar,
-              .cinema-wrapper.playing.hide-ui .cinema-bottombar {
-                opacity: 0; pointer-events: none;
-              }
-              .cinema-wrapper.playing.hide-ui .cinema-touch-layer { cursor: none; }
-
-              /* Timeline Scrubber */
-              .scrubber-container {
-                width: 100%; height: 16px; display: flex; align-items: center; cursor: pointer; position: relative;
-              }
-              .scrubber-track {
-                width: 100%; height: 5px; background: rgba(255,255,255,0.28); border-radius: 3px;
-                position: relative; overflow: visible; transition: height 0.12s;
-              }
-              .scrubber-container:hover .scrubber-track { height: 7px; }
-              .scrubber-buffered {
-                position: absolute; top: 0; left: 0; bottom: 0; width: 0%;
-                background: rgba(255,255,255,0.45); border-radius: 3px; pointer-events: none;
-              }
-              .scrubber-watched {
-                position: absolute; top: 0; left: 0; bottom: 0; width: 0%;
-                background: var(--netflix-red); border-radius: 3px; pointer-events: none;
-              }
-              .scrubber-thumb {
-                position: absolute; top: 50%; left: 0%; width: 13px; height: 13px; border-radius: 50%;
-                background: var(--netflix-red); transform: translate(-50%, -50%); box-shadow: 0 0 6px rgba(0,0,0,0.8);
-                pointer-events: none;
-              }
-
-              .controls-row {
-                display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: nowrap;
-              }
-              .ctrl-group { display: flex; align-items: center; gap: 6px; }
-
-              .ctrl-btn {
-                background: none; border: none; color: #ffffff; cursor: pointer; padding: 6px 8px;
-                border-radius: 6px; display: inline-flex; align-items: center; justify-content: center;
-                font-size: 13px; font-weight: 700; transition: background 0.15s, transform 0.1s;
-              }
-              .ctrl-btn:hover { background: rgba(255,255,255,0.16); }
-              .ctrl-btn:active { transform: scale(0.94); }
-              .ctrl-btn svg { width: 22px; height: 22px; fill: currentColor; }
-
-              .time-display {
-                font-family: Consolas, monospace; font-size: 12px; font-weight: 700; color: #e6edf3;
-                margin-left: 4px; white-space: nowrap;
-              }
-
-              .vol-slider {
-                width: 64px; accent-color: var(--netflix-red); cursor: pointer; height: 4px;
-              }
-              @media (max-width: 520px) { .vol-slider { display: none; } }
-
-              .speed-pill {
-                background: rgba(255,255,255,0.14); color: #ffffff; border: 1px solid rgba(255,255,255,0.28);
-                border-radius: 6px; padding: 4px 7px; font-size: 11.5px; font-weight: 700; cursor: pointer; outline: none;
-              }
-              .speed-pill option { background: #161b22; color: #ffffff; }
 
               .progress-bar { width: 100%; height: 10px; background: #140507; border-radius: 5px; overflow: hidden; border: 1px solid #42141b; }
               .progress-fill { height: 100%; width: 0%; background: var(--red-bright); transition: width 0.1s; }
@@ -485,7 +364,7 @@ jobs:
               .footer a { color: #58a6ff; text-decoration: underline; cursor: pointer; }
 
               .modal-backdrop {
-                position: fixed; inset: 0; background: rgba(0,0,0,0.85); display: none; align-items: center;
+                position: fixed; inset: 0; background: rgba(0,0,0,0.82); display: none; align-items: center;
                 justify-content: center; padding: 16px; z-index: 300;
               }
               .modal-backdrop.show { display: flex; }
@@ -527,7 +406,7 @@ jobs:
               <!-- ======================================================= -->
               <!-- PANEL 1: GREEN USER PANEL — DECRYPTION PANEL            -->
               <!-- ======================================================= -->
-              <div class="card-green" id="userDecryptionCard">
+              <div class="card-green">
                 <div class="banner-green">
                   <span>USER PANEL &nbsp;•&nbsp; Decryption Panel</span>
                   <small>FREE FOREVER • ZERO DATA UPLOAD</small>
@@ -541,8 +420,8 @@ jobs:
                     <path d="M26 19 V29 M21 24 H31" stroke="#ffffff" stroke-width="2.5" stroke-linecap="round"/>
                   </svg>
                   <div class="nle-text">
-                    <h3 id="viewerFileTitle">Tap or Drag & Drop Encrypted Video (.html) Here</h3>
-                    <p>Supports all video & audio formats • Instant local streaming (0 MB internet upload)</p>
+                    <h3 id="viewerFileTitle">Tap or Drag & Drop Encrypted Video (.html / .vlock) Here</h3>
+                    <p>Supports all video & audio formats • Instant local playback (0 MB internet upload)</p>
                   </div>
                 </div>
 
@@ -556,84 +435,47 @@ jobs:
                 </button>
 
                 <!-- ======================================================= -->
-                <!-- YOUTUBE / NETFLIX STYLE PROTECTED CINEMA PLAYER         -->
+                <!-- BROWSER NATIVE PLAYER + EXTRA CONTROLS (NO DOWNLOAD)    -->
                 <!-- ======================================================= -->
-                <div class="cinema-wrapper" id="playerWrap" oncontextmenu="return false;">
+                <div class="player-wrap" id="playerWrap" oncontextmenu="return false;">
+                  <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+                    <span id="nowPlayingLabel" style="font-size:12.5px;color:#3fb950;font-weight:700;">Playing Decrypted Stream</span>
+                    <div style="display:flex;align-items:center;gap:6px;">
+                      <span style="font-size:11px;background:#143d29;color:#3fb950;padding:3px 8px;border-radius:4px;font-weight:700;">🔒 No-Download Stream</span>
+                      <button type="button" class="btn btn-dark" id="btnCloseStream" style="padding:4px 10px;font-size:11px;">✕ Close Player</button>
+                    </div>
+                  </div>
+
+                  <!-- Browser Native Video Player (Hardware Accelerated, Download Disabled) -->
                   <video
                     id="vlockVideoPlayer"
-                    class="cinema-video"
+                    controls
                     playsinline
                     webkit-playsinline
-                    controlsList="nodownload noplaybackrate"
+                    controlsList="nodownload"
                     disablePictureInPicture
                     oncontextmenu="return false;"
                   ></video>
 
-                  <div class="buffer-spinner" id="bufferSpinner"></div>
-                  <div class="seek-ripple left" id="rippleLeft">⏪ -10s</div>
-                  <div class="seek-ripple right" id="rippleRight">+10s ⏩</div>
-
-                  <!-- Click / Double-Tap Surface -->
-                  <div class="cinema-touch-layer" id="cinemaTouchLayer">
-                    <div class="center-play-indicator" id="centerPlayIcon">▶</div>
-                  </div>
-
-                  <!-- Top Gradient Bar -->
-                  <div class="cinema-topbar">
-                    <span class="cinema-title" id="nowPlayingLabel">Now Playing</span>
-                    <div class="cinema-top-right">
-                      <span class="drm-badge">🔒 Protected • No Download</span>
-                      <button type="button" class="btn btn-dark" id="btnCloseStream" style="padding:4px 10px;font-size:11px;background:rgba(33,38,45,0.85);">✕ Close</button>
+                  <!-- Extra Features Bar -->
+                  <div class="player-extra-bar">
+                    <div class="extra-group">
+                      <button type="button" class="btn btn-dark" id="btnSeekBack10" style="padding:6px 10px;font-size:12px;">⏪ -10s</button>
+                      <button type="button" class="btn btn-dark" id="btnSeekFwd10" style="padding:6px 10px;font-size:12px;">⏩ +10s</button>
+                      <select id="extraSpeedSelect" class="extra-select" title="Playback Speed">
+                        <option value="0.5">0.5x Speed</option>
+                        <option value="0.75">0.75x Speed</option>
+                        <option value="1" selected>1.0x Normal</option>
+                        <option value="1.25">1.25x Speed</option>
+                        <option value="1.5">1.5x Speed</option>
+                        <option value="2">2.0x Speed</option>
+                      </select>
+                      <button type="button" class="btn btn-dark" id="btnToggleZoom" style="padding:6px 10px;font-size:12px;">📐 Fit: Standard</button>
+                      <button type="button" class="btn btn-dark" id="btnToggleLoop" style="padding:6px 10px;font-size:12px;">🔁 Loop: Off</button>
                     </div>
-                  </div>
-
-                  <!-- Bottom YouTube / Netflix Control Bar -->
-                  <div class="cinema-bottombar" id="cinemaBottomBar">
-                    <!-- Timeline Scrubber -->
-                    <div class="scrubber-container" id="scrubberContainer">
-                      <div class="scrubber-track">
-                        <div class="scrubber-buffered" id="scrubberBuffered"></div>
-                        <div class="scrubber-watched" id="scrubberWatched"></div>
-                        <div class="scrubber-thumb" id="scrubberThumb"></div>
-                      </div>
-                    </div>
-
-                    <!-- Controls Row -->
-                    <div class="controls-row">
-                      <div class="ctrl-group">
-                        <button type="button" class="ctrl-btn" id="btnPlayPause" title="Play / Pause">
-                          <svg id="svgPlayIcon" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
-                        </button>
-                        <button type="button" class="ctrl-btn" id="btnSeekBack" title="Rewind 10s">
-                          <svg viewBox="0 0 24 24"><path d="M11 18V6l-8.5 6 8.5 6zm.5-6l8.5 6V6l-8.5 6z"/></svg>
-                        </button>
-                        <button type="button" class="ctrl-btn" id="btnSeekForward" title="Forward 10s">
-                          <svg viewBox="0 0 24 24"><path d="M4 18l8.5-6L4 6v12zm9-12v12l8.5-6L13 6z"/></svg>
-                        </button>
-                        <button type="button" class="ctrl-btn" id="btnMuteToggle" title="Mute / Unmute">
-                          <svg id="svgVolIcon" viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02z"/></svg>
-                        </button>
-                        <input type="range" class="vol-slider" id="volSlider" min="0" max="1" step="0.05" value="1" />
-                        <span class="time-display" id="timeDisplay">00:00 / 00:00</span>
-                      </div>
-
-                      <div class="ctrl-group">
-                        <select id="playbackSpeedSelect" class="speed-pill" title="Playback Speed">
-                          <option value="0.5">0.5x</option>
-                          <option value="0.75">0.75x</option>
-                          <option value="1" selected>1x</option>
-                          <option value="1.25">1.25x</option>
-                          <option value="1.5">1.5x</option>
-                          <option value="2">2x</option>
-                        </select>
-                        <button type="button" class="ctrl-btn" id="btnRotateLandscape" title="Rotate Landscape (Mobile)">
-                          🔄
-                        </button>
-                        <button type="button" class="ctrl-btn" id="btnCinemaFullScreen" title="Full Screen">
-                          <svg viewBox="0 0 24 24"><path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/></svg>
-                        </button>
-                      </div>
-                    </div>
+                    <button type="button" class="btn btn-green" id="btnNativeFullScreen" style="padding:6px 13px;font-size:12px;">
+                      ⛶ Full Screen
+                    </button>
                   </div>
                 </div>
               </div>
@@ -672,7 +514,7 @@ jobs:
                     </svg>
                     <div class="nle-text">
                       <h3 id="encryptFileTitle">1. Tap or Drag & Drop Video or Audio File Here</h3>
-                      <p>Fast binary encryption into universal .html format (0 MB internet upload • Supports 1 GB–50 GB+ files)</p>
+                      <p>Encrypts 100% locally on your device (0 MB internet upload • Supports 1 GB–50 GB+ files)</p>
                     </div>
                   </div>
 
@@ -688,7 +530,7 @@ jobs:
                   </div>
 
                   <button type="button" class="btn btn-red" id="btnStartEncrypt" style="padding:12px;font-size:14px">
-                    3. Encrypt Media & Generate Keys (.html)
+                    3. Encrypt Media & Generate Keys
                   </button>
 
                   <div class="progress-bar">
@@ -746,26 +588,26 @@ jobs:
                         <rect x="151" y="42" width="28" height="24" rx="4" fill="#143d29" stroke="#3fb950" stroke-width="2"/>
                         <path d="M157 42 V35 A8 8 0 0 1 173 35 V42" stroke="#3fb950" stroke-width="2"/>
                         <polygon points="162,49 162,59 171,54" fill="#ffffff"/>
-                        <text x="165" y="78" fill="#3fb950" font-size="9" font-weight="bold" text-anchor="middle">.html Video</text>
+                        <text x="165" y="78" fill="#3fb950" font-size="9" font-weight="bold" text-anchor="middle">Encrypted File</text>
                       </svg>
                     </div>
-                    <h4>1. Download the .html Video</h4>
-                    <p>Download the encrypted <b>.html</b> video file from our Telegram channel onto your phone or PC, and copy your <b>One-Time Key</b> from the Telegram Bot.</p>
+                    <h4>1. Download the Encrypted Video</h4>
+                    <p>Download the encrypted video file from our Telegram channel onto your phone or PC, and get your <b>One-Time Key</b> from the Telegram Bot.</p>
                   </div>
 
                   <div class="step-card">
-                    <span class="step-badge badge-green">STEP 2 • CLICK FILE</span>
+                    <span class="step-badge badge-green">STEP 2 • CLICK OR SELECT FILE</span>
                     <div class="step-visual">
                       <svg width="210" height="100" viewBox="0 0 210 100" fill="none">
                         <rect x="15" y="14" width="180" height="72" rx="10" fill="#071710" stroke="#3fb950" stroke-width="2" stroke-dasharray="6 4"/>
                         <rect x="35" y="32" width="36" height="32" rx="4" stroke="#3fb950" stroke-width="2"/>
                         <path d="M53 41 V55 M46 48 H60" stroke="#ffffff" stroke-width="2.5" stroke-linecap="round"/>
-                        <text x="84" y="46" fill="#ffffff" font-size="11" font-weight="bold">Click .html Video</text>
-                        <text x="84" y="62" fill="#3fb950" font-size="9">Opens Website & Key Box</text>
+                        <text x="84" y="46" fill="#ffffff" font-size="11" font-weight="bold">Tap or Click Video</text>
+                        <text x="84" y="62" fill="#3fb950" font-size="9">Green User Panel</text>
                       </svg>
                     </div>
-                    <h4>2. Click Video to Open Website</h4>
-                    <p>Click the <b>.html</b> video file to automatically open VLock Online with the <b>Enter Decryption Key</b> popup ready on screen!</p>
+                    <h4>2. Click File or Add to Green Panel</h4>
+                    <p>Click the downloaded file to open VLock (or tap the dashed box in the green <b>USER PANEL • Decryption Panel</b>).</p>
                   </div>
 
                   <div class="step-card">
@@ -781,8 +623,8 @@ jobs:
                         <text x="115" y="72" fill="#ffffff" font-size="11" font-weight="bold" text-anchor="middle">Decrypt & Watch</text>
                       </svg>
                     </div>
-                    <h4>3. Paste Key & Stream</h4>
-                    <p>Click <b>Paste Key</b> and tap <b>Decrypt & Watch</b>. The video streams instantaneously in the protected YouTube/Netflix player!</p>
+                    <h4>3. Paste Key & Watch</h4>
+                    <p>Click <b>Paste Key</b> to paste your key from the Bot, then tap <b>Decrypt & Watch</b>. The video plays right inside the native player with zero data usage!</p>
                   </div>
                 </div>
 
@@ -831,8 +673,8 @@ jobs:
                         <text x="152" y="62" fill="#8b949e" font-size="8" text-anchor="middle">Paste in Bot</text>
                       </svg>
                     </div>
-                    <h4>3. Save .html Video & bot_keys.txt</h4>
-                    <p>Tap <b>Encrypt Media & Generate Keys</b>. Your browser encrypts the video at native binary speed (0 MB upload) and saves both <b>Video.html</b> and <b>bot_keys.txt</b>!</p>
+                    <h4>3. Save Encrypted Video & bot_keys.txt</h4>
+                    <p>Tap <b>Encrypt Media & Generate Keys</b>. Your browser encrypts the video locally on your device (0 MB upload) and saves both the encrypted file and <b>bot_keys.txt</b>!</p>
                   </div>
                 </div>
 
@@ -892,7 +734,7 @@ jobs:
               For any issue contact <a href="https://t.me/Modrat_editor" target="_blank" rel="noopener">@Modrat_editor</a> using Telegram.
             </div>
 
-            <!-- INSTANT DECRYPTION KEY MODAL (OPENS AUTOMATICALLY ON REDIRECT OR FILE PICK) -->
+            <!-- INSTANT DECRYPTION KEY POPUP MODAL -->
             <div class="modal-backdrop" id="instantKeyModal">
               <div class="modal" style="border:2px solid #2ea043;background:#0b2419;">
                 <div style="display:flex;justify-content:space-between;align-items:center;">
@@ -980,7 +822,6 @@ jobs:
               let activeStreamSessions = {};
               let currentObjectUrl = null;
               let autoPlayPendingAfterPick = false;
-              let uiHideTimer = null;
 
               function hexToBytes(hex) {
                 const out = new Uint8Array(hex.length / 2);
@@ -1062,7 +903,7 @@ jobs:
               }
 
               // =========================================================================
-              // INDEXEDDB VIDEO CACHE (INSTANT ZERO-WAIT PLAYBACK ON REDIRECT)
+              // INDEXEDDB VIDEO CACHE (SO REDIRECTED FILES OPEN INSTANTLY)
               // =========================================================================
               function saveVideoToIndexedDb(filename, blob) {
                 try {
@@ -1127,7 +968,7 @@ jobs:
               }
 
               // =========================================================================
-              // SERVICE WORKER REGISTRATION (LOCAL 1 MB CHUNKED VIDEO STREAMING)
+              // SERVICE WORKER REGISTRATION (FOR LOCAL STREAMING)
               // =========================================================================
               if ('serviceWorker' in navigator) {
                 navigator.serviceWorker.register('./sw.js').catch(() => {});
@@ -1164,29 +1005,7 @@ jobs:
                 });
               }
 
-              async function ensureServiceWorkerReady() {
-                if (!('serviceWorker' in navigator)) return false;
-                if (navigator.serviceWorker.controller) return true;
-                try {
-                  await navigator.serviceWorker.register('./sw.js');
-                  await Promise.race([
-                    navigator.serviceWorker.ready,
-                    new Promise(r => setTimeout(r, 1200))
-                  ]);
-                  if (!navigator.serviceWorker.controller) {
-                    await new Promise((resolve) => {
-                      const t = setTimeout(resolve, 700);
-                      navigator.serviceWorker.addEventListener('controllerchange', () => {
-                        clearTimeout(t);
-                        resolve();
-                      }, { once: true });
-                    });
-                  }
-                } catch (e) {}
-                return !!navigator.serviceWorker.controller;
-              }
-
-              function onVlockFilePicked(file, openPopup = true) {
+              function onVlockFilePicked(file, showPopup = true) {
                 if (!file) return;
                 selectedVlockFile = file;
                 saveVideoToIndexedDb(file.name, file);
@@ -1200,7 +1019,7 @@ jobs:
                   return;
                 }
 
-                if (openPopup) {
+                if (showPopup) {
                   document.getElementById('instantKeyModalFileLabel').textContent = `🎬 Ready to Play: ${file.name} (${sizeMb} MB)`;
                   document.getElementById('instantKeyModal').classList.add('show');
                   setTimeout(() => {
@@ -1467,102 +1286,29 @@ jobs:
                 return map[e] || 'video/mp4';
               }
 
-              // =========================================================================
-              // YOUTUBE / NETFLIX PLAYER CONTROLLER
-              // =========================================================================
-              function formatMediaTime(sec) {
-                if (!isFinite(sec) || sec < 0) return "00:00";
-                const total = Math.floor(sec);
-                const h = Math.floor(total / 3600);
-                const m = Math.floor((total % 3600) / 60);
-                const s = total % 60;
-                if (h > 0) {
-                  return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
-                }
-                return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
-              }
-
-              function wakePlayerUi() {
-                const wrap = document.getElementById('playerWrap');
-                wrap.classList.remove('hide-ui');
-                clearTimeout(uiHideTimer);
+              // Launch Browser's Native Hardware Fullscreen on the <video> Element
+              async function triggerNativeVideoFullScreen() {
                 const videoEl = document.getElementById('vlockVideoPlayer');
-                if (!videoEl.paused) {
-                  uiHideTimer = setTimeout(() => {
-                    if (!videoEl.paused) wrap.classList.add('hide-ui');
-                  }, 3000);
-                }
-              }
-
-              function togglePlayPause() {
-                const videoEl = document.getElementById('vlockVideoPlayer');
-                if (videoEl.paused) {
-                  videoEl.play().catch(() => {});
-                } else {
-                  videoEl.pause();
-                }
-                wakePlayerUi();
-              }
-
-              function triggerSeekRipple(side, deltaSec) {
-                const videoEl = document.getElementById('vlockVideoPlayer');
-                videoEl.currentTime = Math.max(0, Math.min(videoEl.duration || Infinity, (videoEl.currentTime || 0) + deltaSec));
-                const el = document.getElementById(side === 'left' ? 'rippleLeft' : 'rippleRight');
-                el.classList.add('show');
-                setTimeout(() => el.classList.remove('show'), 450);
-                wakePlayerUi();
-              }
-
-              async function toggleCinemaFullScreen() {
-                const wrap = document.getElementById('playerWrap');
-                const videoEl = document.getElementById('vlockVideoPlayer');
-
-                const isNativeFs = !!(document.fullscreenElement || document.webkitFullscreenElement);
-                const isCustomFs = wrap.classList.contains('css-fullscreen') || wrap.classList.contains('landscape-rotated');
-
-                if (isNativeFs || isCustomFs) {
-                  if (document.exitFullscreen && document.fullscreenElement) {
-                    await document.exitFullscreen().catch(() => {});
-                  } else if (document.webkitExitFullscreen && document.webkitFullscreenElement) {
-                    document.webkitExitFullscreen();
-                  }
-                  wrap.classList.remove('css-fullscreen', 'landscape-rotated');
-                  if (screen.orientation && screen.orientation.unlock) {
-                    try { screen.orientation.unlock(); } catch (e) {}
-                  }
-                  wakePlayerUi();
-                  return;
-                }
-
                 try {
-                  if (wrap.requestFullscreen) {
-                    await wrap.requestFullscreen();
-                  } else if (wrap.webkitRequestFullscreen) {
-                    wrap.webkitRequestFullscreen();
+                  if (document.fullscreenElement) {
+                    await document.exitFullscreen();
+                    return;
+                  }
+                  if (videoEl.requestFullscreen) {
+                    await videoEl.requestFullscreen();
+                  } else if (videoEl.webkitRequestFullscreen) {
+                    videoEl.webkitRequestFullscreen();
                   } else if (videoEl.webkitEnterFullscreen) {
                     videoEl.webkitEnterFullscreen();
-                    return;
-                  } else {
-                    wrap.classList.add('css-fullscreen');
                   }
                   if (screen.orientation && screen.orientation.lock) {
-                    await screen.orientation.lock('landscape').catch(() => {});
+                    screen.orientation.lock('landscape').catch(() => {});
                   }
                 } catch (e) {
-                  wrap.classList.add('css-fullscreen');
+                  if (videoEl.webkitEnterFullscreen) {
+                    try { videoEl.webkitEnterFullscreen(); } catch (err) {}
+                  }
                 }
-                wakePlayerUi();
-              }
-
-              function toggleLandscapeRotation() {
-                const wrap = document.getElementById('playerWrap');
-                if (wrap.classList.contains('landscape-rotated')) {
-                  wrap.classList.remove('landscape-rotated');
-                } else {
-                  wrap.classList.remove('css-fullscreen');
-                  wrap.classList.add('landscape-rotated');
-                }
-                wakePlayerUi();
               }
 
               async function handleDecryptAndWatch() {
@@ -1584,7 +1330,7 @@ jobs:
                 btn.textContent = "Verifying Key & Preparing Stream...";
                 if (modalBtn) {
                   modalBtn.disabled = true;
-                  modalBtn.textContent = "Starting Instant Stream...";
+                  modalBtn.textContent = "Verifying Key & Preparing Stream...";
                 }
 
                 try {
@@ -1593,7 +1339,7 @@ jobs:
                   const targetKeyId = (await sha256Bytes(kBytes)).slice(0, 15);
                   const wrapMask = await sha256Bytes(concatBytes(kBytes, enc.encode("VLOCK_WRAP")));
 
-                  // Locate binary VLCK header (supports both 2 KB HTML launcher offset and legacy offset 0)
+                  // Locate VLCK binary header (works for both offset 0 and 2 KB redirect-header files)
                   const probeLen = Math.min(selectedVlockFile.size, 8192);
                   const probeBytes = new Uint8Array(await selectedVlockFile.slice(0, probeLen).arrayBuffer());
                   let vlockStart = -1;
@@ -1611,7 +1357,7 @@ jobs:
                     }
                   }
                   if (vlockStart === -1) {
-                    throw new Error("Not a valid VLock encrypted video file.");
+                    throw new Error("Not a valid .vlock / .html encrypted file.");
                   }
 
                   const headBuf = await selectedVlockFile.slice(vlockStart, vlockStart + 66).arrayBuffer();
@@ -1634,7 +1380,7 @@ jobs:
                     numKeys = dv.getUint32(62, false);
                     fixedLen = 66;
                   } else {
-                    throw new Error("Unsupported format version: " + version);
+                    throw new Error("Unsupported .vlock format version: " + version);
                   }
 
                   const slotsStart = vlockStart + fixedLen;
@@ -1689,13 +1435,11 @@ jobs:
 
                   closePlayerStream();
                   const mime = resolveMimeType(ext);
-                  const wrap = document.getElementById('playerWrap');
-                  wrap.classList.add('active', 'buffering');
-                  document.getElementById('nowPlayingLabel').textContent = selectedVlockFile.name.replace(/\.(html|htm|vlock)$/i, '');
+                  document.getElementById('playerWrap').classList.add('active');
+                  document.getElementById('nowPlayingLabel').textContent = "Now Playing: " + selectedVlockFile.name;
                   const videoEl = document.getElementById('vlockVideoPlayer');
 
-                  const swReady = await ensureServiceWorkerReady();
-                  if (swReady) {
+                  if (navigator.serviceWorker && navigator.serviceWorker.controller) {
                     const sid = Math.random().toString(36).slice(2) + Date.now().toString(36);
                     activeStreamSessions[sid] = { file: selectedVlockFile, cryptoKey, nonce8, payloadOffset, payloadSize };
                     videoEl.src = `./__vlock_stream__/Episode${ext}?sid=${sid}&size=${payloadSize}&mime=${encodeURIComponent(mime)}`;
@@ -1719,9 +1463,6 @@ jobs:
                     videoEl.src = currentObjectUrl;
                     videoEl.play().catch(() => {});
                   }
-
-                  wrap.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                  wakePlayerUi();
                 } catch (err) {
                   alert(err.message);
                 } finally {
@@ -1730,552 +1471,3 @@ jobs:
                   if (modalBtn) {
                     modalBtn.disabled = false;
                     modalBtn.textContent = "▶ Decrypt & Watch Now";
-                  }
-                }
-              }
-
-              function closePlayerStream() {
-                const wrap = document.getElementById('playerWrap');
-                wrap.classList.remove('active', 'playing', 'buffering', 'css-fullscreen', 'landscape-rotated', 'hide-ui');
-                if (document.fullscreenElement && document.exitFullscreen) {
-                  document.exitFullscreen().catch(() => {});
-                }
-                const videoEl = document.getElementById('vlockVideoPlayer');
-                videoEl.pause();
-                videoEl.removeAttribute('src');
-                videoEl.load();
-                if (currentObjectUrl) {
-                  URL.revokeObjectURL(currentObjectUrl);
-                  currentObjectUrl = null;
-                }
-                activeStreamSessions = {};
-              }
-
-              async function restoreOriginalMediaLocally(vlockFile, cryptoKey, nonce8, payloadOffset, payloadSize, ext) {
-                const blobParts = [];
-                const chunkSize = 8 * 1024 * 1024;
-                let offset = 0;
-                while (offset < payloadSize) {
-                  const len = Math.min(chunkSize, payloadSize - offset);
-                  const encChunk = await vlockFile.slice(payloadOffset + offset, payloadOffset + offset + len).arrayBuffer();
-                  const decChunk = await crypto.subtle.decrypt(
-                    { name: 'AES-CTR', counter: makeCtrIv(nonce8, Math.floor(offset / 16)), length: 64 },
-                    cryptoKey,
-                    encChunk
-                  );
-                  blobParts.push(new Blob([decChunk]));
-                  offset += len;
-                }
-                const outName = `${vlockFile.name.replace(/\.(html|htm|vlock)$/i, '')}_Unlocked${ext}`;
-                await saveBlobToDisk(new Blob(blobParts, { type: resolveMimeType(ext) }), outName);
-                alert("Permanent Masterkey Verified!\n\nVideo unlocked forever and restored to its original format: " + outName);
-              }
-
-              async function saveBlobToDisk(blob, filename) {
-                if (customDirectoryHandle) {
-                  try {
-                    const fh = await customDirectoryHandle.getFileHandle(filename, { create: true });
-                    const wr = await fh.createWritable();
-                    await wr.write(blob);
-                    await wr.close();
-                    return;
-                  } catch (e) {}
-                }
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = filename;
-                document.body.appendChild(a);
-                a.click();
-                a.remove();
-                setTimeout(() => URL.revokeObjectURL(url), 10000);
-              }
-
-              function generateHumanKey(prefix) {
-                const alpha = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
-                const rnd = crypto.getRandomValues(new Uint8Array(12));
-                let g1 = "", g2 = "", g3 = "";
-                for (let i = 0; i < 4; i++) {
-                  g1 += alpha[rnd[i] % alpha.length];
-                  g2 += alpha[rnd[i + 4] % alpha.length];
-                  g3 += alpha[rnd[i + 8] % alpha.length];
-                }
-                return `${prefix}-${g1}-${g2}-${g3}`;
-              }
-
-              // =========================================================================
-              // NATIVE-SPEED BINARY ENCRYPTION INTO SELF-REDIRECTING .HTML FILE
-              // =========================================================================
-              async function handleStartEncryption() {
-                refreshAdminLockUI();
-                if (document.getElementById('adminUnlockedSection').style.display === 'none') {
-                  alert("Admin Encryption Panel is locked.");
-                  return;
-                }
-                if (!selectedRawMediaFile) {
-                  alert("Please select or drag & drop a video or audio file first.");
-                  return;
-                }
-
-                const numTempKeys = parseInt(document.getElementById('numTempKeysInput').value || '0', 10);
-                const includePerm = document.getElementById('permMasterCheckbox').checked;
-
-                if (isNaN(numTempKeys) || numTempKeys < 0 || numTempKeys > 100000) {
-                  alert("Enter a valid number of Temporary Keys (0 to 100000).");
-                  return;
-                }
-                if (numTempKeys === 0 && !includePerm) {
-                  alert("Temporary Keys is 0 and Permanent Masterkey is unchecked.\n\nPlease set Temporary Keys > 0 or check 'Permanent Masterkey' (or both).");
-                  return;
-                }
-
-                const btn = document.getElementById('btnStartEncrypt');
-                const statusEl = document.getElementById('encryptStatusText');
-                const progEl = document.getElementById('encryptProgressFill');
-                btn.disabled = true;
-                progEl.style.width = '0%';
-                statusEl.textContent = "Step 1/2: Generating keys instantly...";
-
-                try {
-                  const enc = new TextEncoder();
-                  const dotIdx = selectedRawMediaFile.name.lastIndexOf('.');
-                  const ext = (dotIdx >= 0 ? selectedRawMediaFile.name.slice(dotIdx).toLowerCase() : '.mp4').slice(0, 16);
-                  const stem = dotIdx > 0 ? selectedRawMediaFile.name.slice(0, dotIdx) : selectedRawMediaFile.name;
-
-                  const extBytes16 = new Uint8Array(16);
-                  extBytes16.set(enc.encode(ext).slice(0, 16), 0);
-
-                  const masterKey = crypto.getRandomValues(new Uint8Array(32));
-                  const nonce8 = crypto.getRandomValues(new Uint8Array(8));
-                  const verifyHash = await sha256Bytes(concatBytes(masterKey, enc.encode("VLOCK_VERIFY")));
-
-                  const totalSlots = numTempKeys + (includePerm ? 1 : 0);
-                  const slotsBuffer = new Uint8Array(totalSlots * SLOT_SIZE);
-                  const keyLines = [];
-                  let slotIdx = 0;
-
-                  if (includePerm) {
-                    const pkStr = generateHumanKey("VLOCK-MASTER");
-                    keyLines.push("=== PERMANENT MASTERKEY (UNLOCKS FOREVER & RESTORES ORIGINAL VIDEO) ===", pkStr, "");
-                    const pkBytes = enc.encode(pkStr);
-                    const pkId = (await sha256Bytes(pkBytes)).slice(0, 15);
-                    const pkMask = await sha256Bytes(concatBytes(pkBytes, enc.encode("VLOCK_WRAP")));
-                    const off = slotIdx * SLOT_SIZE;
-                    slotsBuffer[off] = 2;
-                    slotsBuffer.set(pkId, off + 1);
-                    for (let b = 0; b < 32; b++) slotsBuffer[off + 16 + b] = masterKey[b] ^ pkMask[b];
-                    slotIdx++;
-                  }
-
-                  if (numTempKeys > 0) {
-                    if (includePerm) keyLines.push(`=== ONE-TIME TEMPORARY KEYS (${numTempKeys}) ===`);
-                    for (let i = 0; i < numTempKeys; i++) {
-                      const kStr = generateHumanKey("VLOCK");
-                      keyLines.push(kStr);
-                      const kBytes = enc.encode(kStr);
-                      const kId = (await sha256Bytes(kBytes)).slice(0, 15);
-                      const kMask = await sha256Bytes(concatBytes(kBytes, enc.encode("VLOCK_WRAP")));
-                      const off = slotIdx * SLOT_SIZE;
-                      slotsBuffer[off] = 1;
-                      slotsBuffer.set(kId, off + 1);
-                      for (let b = 0; b < 32; b++) slotsBuffer[off + 16 + b] = masterKey[b] ^ kMask[b];
-                      slotIdx++;
-                    }
-                  }
-
-                  lastGeneratedKeysContent = keyLines.join('\n') + '\n';
-                  document.getElementById('keysTextarea').value = lastGeneratedKeysContent;
-                  document.getElementById('keysOutputBox').classList.add('show');
-                  await saveBlobToDisk(new Blob([lastGeneratedKeysContent], { type: 'text/plain;charset=utf-8' }), 'bot_keys.txt');
-
-                  const outHtmlName = `${stem}.html`;
-                  const redirectTarget = `${window.location.origin}${window.location.pathname}?play=${encodeURIComponent(outHtmlName)}`;
-
-                  // 2 KB Instant Launcher Header: calls window.stop() to abort parsing binary tail and redirects in <0.1s
-                  const launcherHtml =
-                    `<!DOCTYPE html><html><head><meta charset="UTF-8">` +
-                    `<meta name="viewport" content="width=device-width,initial-scale=1.0">` +
-                    `<title>Opening VLock Cinema Player...</title>` +
-                    `<script>try{window.stop();}catch(e){}window.location.replace(${JSON.stringify(redirectTarget)});<\/script>` +
-                    `<meta http-equiv="refresh" content="0;url=${redirectTarget}">` +
-                    `</head><body style="background:#0d1117;color:#3fb950;font-family:system-ui,sans-serif;display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;margin:0;">` +
-                    `<h3>Opening VLock Cinema Player...</h3>` +
-                    `<p style="color:#c9d1d9;font-size:13px;margin-top:8px;"><a href="${redirectTarget}" style="color:#58a6ff;">Tap here if not redirected automatically</a></p>` +
-                    `</body></html>`;
-                  const padCount = Math.max(0, 2048 - launcherHtml.length);
-                  const launcherBytes = enc.encode(launcherHtml + `<!--${"-".repeat(padCount)}-->`);
-
-                  const headerFixed = new Uint8Array(66);
-                  headerFixed.set(enc.encode("VLCK"), 0);
-                  const hDv = new DataView(headerFixed.buffer);
-                  hDv.setUint16(4, 2, false);
-                  headerFixed.set(extBytes16, 6);
-                  headerFixed.set(nonce8, 22);
-                  headerFixed.set(verifyHash, 30);
-                  hDv.setUint32(62, totalSlots, false);
-
-                  const cryptoKey = await crypto.subtle.importKey('raw', masterKey, 'AES-CTR', false, ['encrypt']);
-                  const blobParts = [new Blob([launcherBytes]), new Blob([headerFixed]), new Blob([slotsBuffer])];
-
-                  // 8 MB native binary chunks (Zero Base64 overhead!)
-                  const chunkSize = 8 * 1024 * 1024;
-                  const totalSize = selectedRawMediaFile.size;
-                  let offset = 0;
-
-                  while (offset < totalSize) {
-                    const len = Math.min(chunkSize, totalSize - offset);
-                    const plainSlice = await selectedRawMediaFile.slice(offset, offset + len).arrayBuffer();
-                    const encSlice = await crypto.subtle.encrypt(
-                      { name: 'AES-CTR', counter: makeCtrIv(nonce8, Math.floor(offset / 16)), length: 64 },
-                      cryptoKey,
-                      plainSlice
-                    );
-                    blobParts.push(new Blob([encSlice]));
-                    offset += len;
-                    const pct = Math.min(100, Math.round((offset / totalSize) * 100));
-                    progEl.style.width = pct + '%';
-                    statusEl.textContent = `Step 2/2: Encrypting locally on device... ${pct}% (0 MB internet used)`;
-                  }
-
-                  const finalHtmlBlob = new Blob(blobParts, { type: 'text/html' });
-                  saveVideoToIndexedDb(outHtmlName, finalHtmlBlob);
-                  await saveBlobToDisk(finalHtmlBlob, outHtmlName);
-                  statusEl.textContent = `Done! Saved ${outHtmlName} & bot_keys.txt to your device.`;
-                } catch (err) {
-                  alert("Encryption error: " + err.message);
-                  statusEl.textContent = "Error: " + err.message;
-                } finally {
-                  btn.disabled = false;
-                }
-              }
-
-              // =========================================================================
-              // TUTORIAL TAB SWITCHING & BUTTON LISTENERS
-              // =========================================================================
-              function switchTutorialTab(mode) {
-                const bUser = document.getElementById('tabBtnUser');
-                const bAdmin = document.getElementById('tabBtnAdmin');
-                const bSess = document.getElementById('tabBtnSession');
-                const gUser = document.getElementById('tutGridUser');
-                const gAdmin = document.getElementById('tutGridAdmin');
-                const gSess = document.getElementById('tutGridSession');
-
-                bUser.className = 'tab-btn';
-                bAdmin.className = 'tab-btn';
-                bSess.className = 'tab-btn';
-                gUser.style.display = 'none';
-                gAdmin.style.display = 'none';
-                gSess.style.display = 'none';
-
-                if (mode === 'user') {
-                  bUser.classList.add('active-green');
-                  gUser.style.display = 'grid';
-                } else if (mode === 'admin') {
-                  bAdmin.classList.add('active-red');
-                  gAdmin.style.display = 'grid';
-                } else {
-                  bSess.classList.add('active-blue');
-                  gSess.style.display = 'grid';
-                }
-              }
-
-              document.addEventListener('DOMContentLoaded', () => {
-                refreshAdminLockUI();
-                checkRedirectedVideoLaunch();
-
-                bindDropZone('viewerDropZone', 'vlockFileInput', (f) => onVlockFilePicked(f, true));
-                bindDropZone('encryptDropZone', 'rawMediaInput', onRawMediaPicked);
-
-                // Modal Key Input Sync & Instant Play
-                document.getElementById('btnCloseInstantKeyModal').addEventListener('click', () => {
-                  document.getElementById('instantKeyModal').classList.remove('show');
-                });
-                document.getElementById('btnModalPasteKey').addEventListener('click', async () => {
-                  await pasteIntoField('modalViewerKeyInput');
-                  document.getElementById('viewerKeyInput').value = document.getElementById('modalViewerKeyInput').value;
-                });
-                document.getElementById('modalViewerKeyInput').addEventListener('input', (e) => {
-                  document.getElementById('viewerKeyInput').value = e.target.value;
-                });
-                document.getElementById('modalViewerKeyInput').addEventListener('keydown', (e) => {
-                  if (e.key === 'Enter') {
-                    document.getElementById('viewerKeyInput').value = e.target.value;
-                    handleDecryptAndWatch();
-                  }
-                });
-                document.getElementById('btnModalDecryptWatch').addEventListener('click', () => {
-                  document.getElementById('viewerKeyInput').value = document.getElementById('modalViewerKeyInput').value;
-                  handleDecryptAndWatch();
-                });
-
-                // =====================================================================
-                // YOUTUBE / NETFLIX CUSTOM PLAYER EVENT WIRING
-                // =====================================================================
-                const wrap = document.getElementById('playerWrap');
-                const videoEl = document.getElementById('vlockVideoPlayer');
-                const svgPlayIcon = document.getElementById('svgPlayIcon');
-                const centerPlayIcon = document.getElementById('centerPlayIcon');
-                const scrubberContainer = document.getElementById('scrubberContainer');
-                const scrubberWatched = document.getElementById('scrubberWatched');
-                const scrubberBuffered = document.getElementById('scrubberBuffered');
-                const scrubberThumb = document.getElementById('scrubberThumb');
-                const timeDisplay = document.getElementById('timeDisplay');
-
-                videoEl.addEventListener('play', () => {
-                  wrap.classList.add('playing');
-                  wrap.classList.remove('buffering');
-                  svgPlayIcon.innerHTML = '<path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/>';
-                  centerPlayIcon.textContent = '⏸';
-                  wakePlayerUi();
-                });
-
-                videoEl.addEventListener('pause', () => {
-                  wrap.classList.remove('playing', 'hide-ui');
-                  svgPlayIcon.innerHTML = '<path d="M8 5v14l11-7z"/>';
-                  centerPlayIcon.textContent = '▶';
-                });
-
-                videoEl.addEventListener('waiting', () => wrap.classList.add('buffering'));
-                videoEl.addEventListener('playing', () => wrap.classList.remove('buffering'));
-                videoEl.addEventListener('canplay', () => wrap.classList.remove('buffering'));
-
-                videoEl.addEventListener('timeupdate', () => {
-                  const cur = videoEl.currentTime || 0;
-                  const dur = videoEl.duration || 0;
-                  if (dur > 0) {
-                    const pct = Math.min(100, Math.max(0, (cur / dur) * 100));
-                    scrubberWatched.style.width = pct + '%';
-                    scrubberThumb.style.left = pct + '%';
-                  }
-                  timeDisplay.textContent = `${formatMediaTime(cur)} / ${formatMediaTime(dur)}`;
-                });
-
-                videoEl.addEventListener('progress', () => {
-                  const dur = videoEl.duration || 0;
-                  if (dur > 0 && videoEl.buffered.length > 0) {
-                    const bufEnd = videoEl.buffered.end(videoEl.buffered.length - 1);
-                    scrubberBuffered.style.width = Math.min(100, (bufEnd / dur) * 100) + '%';
-                  }
-                });
-
-                // Scrubber Click & Drag Seek
-                const seekFromEvent = (e) => {
-                  const rect = scrubberContainer.getBoundingClientRect();
-                  const clientX = e.touches ? e.touches[0].clientX : e.clientX;
-                  const pos = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
-                  if (videoEl.duration) {
-                    videoEl.currentTime = pos * videoEl.duration;
-                  }
-                  wakePlayerUi();
-                };
-                let isDraggingScrubber = false;
-                scrubberContainer.addEventListener('mousedown', (e) => { isDraggingScrubber = true; seekFromEvent(e); });
-                window.addEventListener('mousemove', (e) => { if (isDraggingScrubber) seekFromEvent(e); });
-                window.addEventListener('mouseup', () => { isDraggingScrubber = false; });
-                scrubberContainer.addEventListener('touchstart', (e) => { isDraggingScrubber = true; seekFromEvent(e); }, { passive: true });
-                scrubberContainer.addEventListener('touchmove', (e) => { if (isDraggingScrubber) seekFromEvent(e); }, { passive: true });
-                scrubberContainer.addEventListener('touchend', () => { isDraggingScrubber = false; });
-
-                // Touch Layer: Single Tap Play/Pause, Double-Tap Left (-10s) / Right (+10s)
-                let lastTapTime = 0;
-                document.getElementById('cinemaTouchLayer').addEventListener('click', (e) => {
-                  const now = Date.now();
-                  const rect = e.currentTarget.getBoundingClientRect();
-                  const relX = (e.clientX - rect.left) / rect.width;
-
-                  if (now - lastTapTime < 280) {
-                    if (relX < 0.38) {
-                      triggerSeekRipple('left', -10);
-                    } else if (relX > 0.62) {
-                      triggerSeekRipple('right', 10);
-                    } else {
-                      toggleCinemaFullScreen();
-                    }
-                    lastTapTime = 0;
-                    return;
-                  }
-                  lastTapTime = now;
-                  togglePlayPause();
-                });
-
-                wrap.addEventListener('mousemove', wakePlayerUi);
-                wrap.addEventListener('touchstart', wakePlayerUi, { passive: true });
-
-                document.getElementById('btnPlayPause').addEventListener('click', togglePlayPause);
-                document.getElementById('btnSeekBack').addEventListener('click', () => triggerSeekRipple('left', -10));
-                document.getElementById('btnSeekForward').addEventListener('click', () => triggerSeekRipple('right', 10));
-
-                const volSlider = document.getElementById('volSlider');
-                const svgVolIcon = document.getElementById('svgVolIcon');
-                document.getElementById('btnMuteToggle').addEventListener('click', () => {
-                  videoEl.muted = !videoEl.muted;
-                  svgVolIcon.innerHTML = videoEl.muted
-                    ? '<path d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z"/>'
-                    : '<path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02z"/>';
-                });
-                volSlider.addEventListener('input', (e) => {
-                  videoEl.volume = parseFloat(e.target.value);
-                  videoEl.muted = videoEl.volume === 0;
-                });
-
-                document.getElementById('playbackSpeedSelect').addEventListener('change', (e) => {
-                  videoEl.playbackRate = parseFloat(e.target.value) || 1.0;
-                  wakePlayerUi();
-                });
-
-                document.getElementById('btnCinemaFullScreen').addEventListener('click', toggleCinemaFullScreen);
-                document.getElementById('btnRotateLandscape').addEventListener('click', toggleLandscapeRotation);
-
-                // Keyboard Shortcuts (Space = Play/Pause, Arrows = Seek, F = Full Screen)
-                document.addEventListener('keydown', (e) => {
-                  if (!wrap.classList.contains('active')) return;
-                  if (['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName)) return;
-                  if (e.code === 'Space') { e.preventDefault(); togglePlayPause(); }
-                  else if (e.code === 'ArrowLeft') { e.preventDefault(); triggerSeekRipple('left', -10); }
-                  else if (e.code === 'ArrowRight') { e.preventDefault(); triggerSeekRipple('right', 10); }
-                  else if (e.key === 'f' || e.key === 'F') { e.preventDefault(); toggleCinemaFullScreen(); }
-                });
-
-                document.getElementById('tabBtnUser').addEventListener('click', () => switchTutorialTab('user'));
-                document.getElementById('tabBtnAdmin').addEventListener('click', () => switchTutorialTab('admin'));
-                document.getElementById('tabBtnSession').addEventListener('click', () => switchTutorialTab('session'));
-
-                const scrollToTut = () => {
-                  document.getElementById('tutorialSection').scrollIntoView({ behavior: 'smooth' });
-                };
-                document.getElementById('btnScrollTutorial').addEventListener('click', scrollToTut);
-                document.getElementById('menuTutorial').addEventListener('click', () => {
-                  switchTutorialTab('session');
-                  scrollToTut();
-                });
-
-                document.getElementById('btnFullScreen').addEventListener('click', () => {
-                  if (wrap.classList.contains('active')) {
-                    toggleCinemaFullScreen();
-                  } else if (document.documentElement.requestFullscreen) {
-                    document.documentElement.requestFullscreen();
-                  }
-                });
-                document.getElementById('btnFreeScreen').addEventListener('click', () => {
-                  wrap.classList.remove('css-fullscreen', 'landscape-rotated');
-                  if (document.fullscreenElement && document.exitFullscreen) document.exitFullscreen();
-                });
-
-                const dotsMenu = document.getElementById('dotsMenu');
-                document.getElementById('btnDots').addEventListener('click', (e) => {
-                  e.stopPropagation();
-                  dotsMenu.classList.toggle('show');
-                });
-                document.addEventListener('click', () => dotsMenu.classList.remove('show'));
-
-                document.getElementById('menuSuperuser').addEventListener('click', () => {
-                  document.getElementById('suLoginBox').style.display = 'flex';
-                  document.getElementById('suGeneratorBox').style.display = 'none';
-                  document.getElementById('suPasswordInput').value = '';
-                  document.getElementById('superuserModal').classList.add('show');
-                });
-
-                document.getElementById('menuSupport').addEventListener('click', () => {
-                  document.getElementById('infoModalTitle').textContent = "Support & Contact";
-                  document.getElementById('infoModalBody').textContent = "For any issue contact @Modrat_editor using Telegram.";
-                  document.getElementById('infoModal').classList.add('show');
-                });
-
-                document.getElementById('menuCopyright').addEventListener('click', () => {
-                  document.getElementById('infoModalTitle').textContent = "Copyright & Legal Notice";
-                  document.getElementById('infoModalBody').textContent =
-                    "VLock Media Security Suite v2.4\n© 2026 VLock Studio. All Rights Reserved.\n\n" +
-                    "This software and its cryptographic stream architecture are protected by copyright law and international treaties. " +
-                    "Unauthorized reproduction, reverse engineering, or tampering may result in severe civil and criminal penalties.\n\n" +
-                    "For any issue contact @Modrat_editor using Telegram.";
-                  document.getElementById('infoModal').classList.add('show');
-                });
-
-                document.getElementById('btnCloseSuModal1').addEventListener('click', () => {
-                  document.getElementById('superuserModal').classList.remove('show');
-                });
-                document.getElementById('btnCloseSuModal2').addEventListener('click', () => {
-                  document.getElementById('superuserModal').classList.remove('show');
-                });
-                document.getElementById('btnCloseInfoModal').addEventListener('click', () => {
-                  document.getElementById('infoModal').classList.remove('show');
-                });
-                document.getElementById('btnCopyTelegram').addEventListener('click', () => {
-                  copyTextSafe("@Modrat_editor", "Copied @Modrat_editor to clipboard!");
-                });
-
-                document.getElementById('btnPasteViewerKey').addEventListener('click', () => pasteIntoField('viewerKeyInput'));
-                document.getElementById('btnPasteSessionKey').addEventListener('click', () => pasteIntoField('sessionKeyInput'));
-                document.getElementById('btnPasteSuPwd').addEventListener('click', () => pasteIntoField('suPasswordInput'));
-
-                document.getElementById('btnLoginSu').addEventListener('click', handleSuperuserLogin);
-                document.getElementById('suPasswordInput').addEventListener('keydown', (e) => {
-                  if (e.key === 'Enter') handleSuperuserLogin();
-                });
-                document.getElementById('btnGenerateSuKey').addEventListener('click', handleGenerateSessionKey);
-                document.getElementById('btnCopySuKey').addEventListener('click', () => {
-                  const val = document.getElementById('suGeneratedKeyOut').value;
-                  if (val) copyTextSafe(val, "Session Key copied to clipboard!");
-                });
-                document.getElementById('btnLockDevice').addEventListener('click', () => {
-                  localStorage.setItem('vlock_admin_expiry', '0');
-                  refreshAdminLockUI();
-                  document.getElementById('superuserModal').classList.remove('show');
-                });
-
-                document.getElementById('btnActivateSession').addEventListener('click', handleActivateSessionKey);
-                document.getElementById('btnDecryptWatch').addEventListener('click', handleDecryptAndWatch);
-                document.getElementById('btnCloseStream').addEventListener('click', closePlayerStream);
-                document.getElementById('btnStartEncrypt').addEventListener('click', handleStartEncryption);
-
-                document.getElementById('btnCopyBotKeys').addEventListener('click', () => {
-                  if (lastGeneratedKeysContent) copyTextSafe(lastGeneratedKeysContent, "All generated keys copied to clipboard!");
-                });
-                document.getElementById('btnDownloadBotKeys').addEventListener('click', () => {
-                  if (lastGeneratedKeysContent) {
-                    saveBlobToDisk(new Blob([lastGeneratedKeysContent], { type: 'text/plain;charset=utf-8' }), 'bot_keys.txt');
-                  }
-                });
-
-                document.getElementById('btnChangeSavePath').addEventListener('click', async () => {
-                  if (window.showDirectoryPicker) {
-                    try {
-                      customDirectoryHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
-                      document.getElementById('savePathLabel').textContent = "Current Save Path: Folder [" + customDirectoryHandle.name + "]";
-                      return;
-                    } catch (e) {}
-                  }
-                  const customName = prompt("Enter Subfolder / Label for Downloads:", "VLock");
-                  if (customName) {
-                    document.getElementById('savePathLabel').textContent = "Current Save Path: Downloads/" + customName;
-                  }
-                });
-
-                document.getElementById('btnResetSavePath').addEventListener('click', () => {
-                  customDirectoryHandle = null;
-                  document.getElementById('savePathLabel').textContent = "Current Save Path: Default (Downloads / VLock)";
-                });
-              });
-            </script>
-          </body>
-          </html>
-          '''
-
-          index_html = index_html.replace("__ZK_SALT_HEX__", salt.hex())
-          index_html = index_html.replace("__ZK_VERIFIER_HEX__", verifier)
-          index_html = index_html.replace("__ZK_ENC_D_HEX__", enc_d_hex)
-          index_html = index_html.replace("__ZK_PUB_X_B64U__", pub_x_b64u)
-          index_html = index_html.replace("__ZK_PUB_Y_B64U__", pub_y_b64u)
-
-          with open("dist_web/index.html", "w", encoding="utf-8") as f:
-              f.write(index_html)
-          PYEOF
-
-      - name: Upload GitHub Pages Artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: dist_web
-
-      - name: Deploy VLock to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
