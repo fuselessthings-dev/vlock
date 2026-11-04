@@ -73,7 +73,7 @@ jobs:
           enc_d_hex = (enc.update(d_raw32) + enc.finalize()).hex()
 
           # =====================================================================
-          # 2. SERVICE WORKER (ORIGINAL FAST 64-BIT VIDEO STREAMING)
+          # 2. SERVICE WORKER (PARALLEL MULTI-CLIENT 64-BIT VIDEO STREAMING)
           # =====================================================================
           sw_js = r'''self.addEventListener('install', (event) => {
             self.skipWaiting();
@@ -104,7 +104,7 @@ jobs:
                 if (parts[1]) end = Math.min(totalSize - 1, parseInt(parts[1], 10));
               }
 
-              const maxChunk = 1024 * 1024;
+              const maxChunk = 2 * 1024 * 1024;
               if (end - start + 1 > maxChunk) {
                 end = start + maxChunk - 1;
                 isPartial = true;
@@ -115,26 +115,41 @@ jobs:
                 return new Response('Stream closed', { status: 404 });
               }
 
-              let chunkBuffer = null;
-              for (const client of clientsList) {
-                try {
-                  chunkBuffer = await new Promise((resolve, reject) => {
-                    const channel = new MessageChannel();
-                    const timer = setTimeout(() => reject(new Error('Stream timeout')), 15000);
-                    channel.port1.onmessage = (e) => {
-                      clearTimeout(timer);
-                      if (e.data && e.data.ok) resolve(e.data.buffer);
-                      else reject(new Error('Read error'));
-                    };
-                    client.postMessage({ type: 'VLOCK_STREAM_PULL', sid, start, end }, [channel.port2]);
-                  });
-                  if (chunkBuffer) break;
-                } catch (e) {}
-              }
+              // Query ALL clients in parallel so inactive/launcher tabs never cause a 15-30s timeout or black screen
+              const chunkBuffer = await new Promise((resolve, reject) => {
+                let settled = false;
+                let failCount = 0;
+                const timer = setTimeout(() => {
+                  if (!settled) {
+                    settled = true;
+                    reject(new Error('Stream timeout'));
+                  }
+                }, 8000);
 
-              if (!chunkBuffer) {
-                return new Response('Stream closed', { status: 404 });
-              }
+                clientsList.forEach((client) => {
+                  const channel = new MessageChannel();
+                  channel.port1.onmessage = (e) => {
+                    if (settled) return;
+                    if (e.data && e.data.ok && e.data.buffer) {
+                      settled = true;
+                      clearTimeout(timer);
+                      resolve(e.data.buffer);
+                    } else {
+                      failCount++;
+                      if (failCount >= clientsList.length) {
+                        settled = true;
+                        clearTimeout(timer);
+                        reject(new Error('Session not found'));
+                      }
+                    }
+                  };
+                  try {
+                    client.postMessage({ type: 'VLOCK_STREAM_PULL', sid, start, end }, [channel.port2]);
+                  } catch (err) {
+                    failCount++;
+                  }
+                });
+              });
 
               const byteLen = chunkBuffer.byteLength;
               const headers = new Headers({
@@ -271,33 +286,46 @@ jobs:
               }
 
               /* ========================================================= */
-              /* BROWSER NATIVE PLAYER + EXTRA FEATURES BAR (NO DOWNLOAD)  */
+              /* 4-CORNER CINEMA PLAYER LAYOUT (UNOBSTRUCTED NATIVE VIDEO) */
               /* ========================================================= */
               .player-wrap {
-                display: none; flex-direction: column; gap: 10px; background: #000000; border-radius: 10px;
-                padding: 12px; border: 2px solid var(--green-border); margin-top: 4px;
+                display: none; flex-direction: column; justify-content: space-between; gap: 10px;
+                background: #05080c; border-radius: 12px; padding: 12px; border: 2px solid var(--green-border);
+                margin-top: 8px; box-shadow: 0 12px 32px rgba(0,0,0,0.85);
               }
               .player-wrap.active { display: flex; }
 
+              /* Top 2 Corners Row & Bottom 2 Corners Row */
+              .player-corners-row {
+                display: flex; align-items: center; justify-content: space-between; gap: 10px;
+                flex-wrap: wrap; width: 100%;
+              }
+              .corner-pod {
+                display: flex; align-items: center; gap: 6px; background: #0d1117;
+                border: 1px solid #21262d; border-radius: 8px; padding: 6px 10px; flex-wrap: wrap;
+              }
+              .corner-title {
+                font-size: 12.5px; color: #3fb950; font-weight: 700; max-width: 240px;
+                white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+              }
+              .corner-badge {
+                font-size: 10.5px; background: #143d29; color: #3fb950; padding: 3px 7px;
+                border-radius: 5px; font-weight: 800; border: 1px solid #2ea043;
+              }
+              .corner-select {
+                background: #21262d; color: #ffffff; border: 1px solid #30363d; border-radius: 6px;
+                padding: 5px 8px; font-size: 11.5px; font-weight: 700; cursor: pointer; outline: none;
+              }
+
+              /* Center Video Frame — 100% Uncovered & Unobstructed */
+              .player-center-stage {
+                width: 100%; background: #000000; border-radius: 8px; overflow: hidden;
+                display: flex; align-items: center; justify-content: center; border: 1px solid #161b22;
+              }
               video {
                 width: 100%; max-height: 480px; border-radius: 6px; background: #000000; outline: none;
-                display: block;
               }
               video.zoom-cover { object-fit: cover; }
-
-              /* Hide Native Browser Download Button Across Chromium / WebKit */
-              video::-internal-media-controls-download-button { display: none !important; }
-              video::-webkit-media-controls-enclosure { overflow: hidden !important; }
-
-              .player-extra-bar {
-                display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap;
-                background: #0d1117; border: 1px solid #21262d; border-radius: 8px; padding: 8px 10px;
-              }
-              .extra-group { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-              .extra-select {
-                background: #21262d; color: #ffffff; border: 1px solid #30363d; border-radius: 6px;
-                padding: 6px 9px; font-size: 12px; font-weight: 700; cursor: pointer; outline: none;
-              }
 
               .progress-bar { width: 100%; height: 10px; background: #140507; border-radius: 5px; overflow: hidden; border: 1px solid #42141b; }
               .progress-fill { height: 100%; width: 0%; background: var(--red-bright); transition: width 0.1s; }
@@ -435,34 +463,52 @@ jobs:
                 </button>
 
                 <!-- ======================================================= -->
-                <!-- BROWSER NATIVE PLAYER + EXTRA CONTROLS (NO DOWNLOAD)    -->
+                <!-- 4-CORNER WEB PLAYER (UNOBSTRUCTED NATIVE VIDEO STAGE)   -->
                 <!-- ======================================================= -->
                 <div class="player-wrap" id="playerWrap" oncontextmenu="return false;">
-                  <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
-                    <span id="nowPlayingLabel" style="font-size:12.5px;color:#3fb950;font-weight:700;">Playing Decrypted Stream</span>
-                    <div style="display:flex;align-items:center;gap:6px;">
-                      <span style="font-size:11px;background:#143d29;color:#3fb950;padding:3px 8px;border-radius:4px;font-weight:700;">🔒 No-Download Stream</span>
-                      <button type="button" class="btn btn-dark" id="btnCloseStream" style="padding:4px 10px;font-size:11px;">✕ Close Player</button>
+
+                  <!-- TOP 2 CORNERS (TOP-LEFT & TOP-RIGHT) -->
+                  <div class="player-corners-row">
+                    <!-- TOP-LEFT CORNER: Title + Protected Badge -->
+                    <div class="corner-pod">
+                      <span class="corner-badge">🔒 No-Download</span>
+                      <span id="nowPlayingLabel" class="corner-title">Playing Decrypted Stream</span>
+                    </div>
+
+                    <!-- TOP-RIGHT CORNER: Direct Memory Mode Fix + Close Player -->
+                    <div class="corner-pod">
+                      <button type="button" class="btn btn-purple" id="btnDirectBlobMode" style="padding:5px 10px;font-size:11px;" title="Switch to Direct Memory Mode if stream screen is black">
+                        ⚡ Direct Memory Mode
+                      </button>
+                      <button type="button" class="btn btn-red" id="btnCloseStream" style="padding:5px 10px;font-size:11px;">
+                        ✕ Close
+                      </button>
                     </div>
                   </div>
 
-                  <!-- Browser Native Video Player (Hardware Accelerated, Download Disabled) -->
-                  <video
-                    id="vlockVideoPlayer"
-                    controls
-                    playsinline
-                    webkit-playsinline
-                    controlsList="nodownload"
-                    disablePictureInPicture
-                    oncontextmenu="return false;"
-                  ></video>
+                  <!-- CENTER VIDEO STAGE (100% UNCOVERED NATIVE BROWSER PLAYER) -->
+                  <div class="player-center-stage">
+                    <video
+                      id="vlockVideoPlayer"
+                      controls
+                      playsinline
+                      controlsList="nodownload"
+                      oncontextmenu="return false;"
+                    ></video>
+                  </div>
 
-                  <!-- Extra Features Bar -->
-                  <div class="player-extra-bar">
-                    <div class="extra-group">
-                      <button type="button" class="btn btn-dark" id="btnSeekBack10" style="padding:6px 10px;font-size:12px;">⏪ -10s</button>
-                      <button type="button" class="btn btn-dark" id="btnSeekFwd10" style="padding:6px 10px;font-size:12px;">⏩ +10s</button>
-                      <select id="extraSpeedSelect" class="extra-select" title="Playback Speed">
+                  <!-- BOTTOM 2 CORNERS (BOTTOM-LEFT & BOTTOM-RIGHT) -->
+                  <div class="player-corners-row">
+                    <!-- BOTTOM-LEFT CORNER: Seek -10s / +10s + Fit/Zoom -->
+                    <div class="corner-pod">
+                      <button type="button" class="btn btn-dark" id="btnSeekBack10" style="padding:6px 10px;font-size:11.5px;">⏪ -10s</button>
+                      <button type="button" class="btn btn-dark" id="btnSeekFwd10" style="padding:6px 10px;font-size:11.5px;">⏩ +10s</button>
+                      <button type="button" class="btn btn-dark" id="btnToggleZoom" style="padding:6px 10px;font-size:11.5px;">📐 Fit: Standard</button>
+                    </div>
+
+                    <!-- BOTTOM-RIGHT CORNER: Speed + Loop + Full Screen -->
+                    <div class="corner-pod">
+                      <select id="extraSpeedSelect" class="corner-select" title="Playback Speed">
                         <option value="0.5">0.5x Speed</option>
                         <option value="0.75">0.75x Speed</option>
                         <option value="1" selected>1.0x Normal</option>
@@ -470,13 +516,13 @@ jobs:
                         <option value="1.5">1.5x Speed</option>
                         <option value="2">2.0x Speed</option>
                       </select>
-                      <button type="button" class="btn btn-dark" id="btnToggleZoom" style="padding:6px 10px;font-size:12px;">📐 Fit: Standard</button>
-                      <button type="button" class="btn btn-dark" id="btnToggleLoop" style="padding:6px 10px;font-size:12px;">🔁 Loop: Off</button>
+                      <button type="button" class="btn btn-dark" id="btnToggleLoop" style="padding:6px 10px;font-size:11.5px;">🔁 Loop: Off</button>
+                      <button type="button" class="btn btn-green" id="btnNativeFullScreen" style="padding:6px 12px;font-size:11.5px;">
+                        ⛶ Full Screen
+                      </button>
                     </div>
-                    <button type="button" class="btn btn-green" id="btnNativeFullScreen" style="padding:6px 13px;font-size:12px;">
-                      ⛶ Full Screen
-                    </button>
                   </div>
+
                 </div>
               </div>
 
@@ -624,7 +670,7 @@ jobs:
                       </svg>
                     </div>
                     <h4>3. Paste Key & Watch</h4>
-                    <p>Click <b>Paste Key</b> to paste your key from the Bot, then tap <b>Decrypt & Watch</b>. The video plays right inside the native player with zero data usage!</p>
+                    <p>Click <b>Paste Key</b> to paste your key from the Bot, then tap <b>Decrypt & Watch</b>. The video plays right inside the native 4-corner player!</p>
                   </div>
                 </div>
 
@@ -821,6 +867,7 @@ jobs:
               let verifiedSuPassword = "";
               let activeStreamSessions = {};
               let currentObjectUrl = null;
+              let lastDecryptedSessionParams = null;
               let autoPlayPendingAfterPick = false;
 
               function hexToBytes(hex) {
@@ -1286,7 +1333,6 @@ jobs:
                 return map[e] || 'video/mp4';
               }
 
-              // Launch Browser's Native Hardware Fullscreen on the <video> Element
               async function triggerNativeVideoFullScreen() {
                 const videoEl = document.getElementById('vlockVideoPlayer');
                 try {
@@ -1308,6 +1354,39 @@ jobs:
                   if (videoEl.webkitEnterFullscreen) {
                     try { videoEl.webkitEnterFullscreen(); } catch (err) {}
                   }
+                }
+              }
+
+              async function playViaDirectMemoryBlob(params) {
+                const { file, cryptoKey, nonce8, payloadOffset, payloadSize, mime } = params;
+                const btn = document.getElementById('btnDirectBlobMode');
+                btn.disabled = true;
+                btn.textContent = "⏳ Loading Memory Stream...";
+                try {
+                  const blobParts = [];
+                  const chunkSize = 16 * 1024 * 1024;
+                  let offset = 0;
+                  while (offset < payloadSize) {
+                    const len = Math.min(chunkSize, payloadSize - offset);
+                    const encChunk = await file.slice(payloadOffset + offset, payloadOffset + offset + len).arrayBuffer();
+                    const decChunk = await crypto.subtle.decrypt(
+                      { name: 'AES-CTR', counter: makeCtrIv(nonce8, Math.floor(offset / 16)), length: 64 },
+                      cryptoKey,
+                      encChunk
+                    );
+                    blobParts.push(new Blob([decChunk]));
+                    offset += len;
+                  }
+                  if (currentObjectUrl) URL.revokeObjectURL(currentObjectUrl);
+                  currentObjectUrl = URL.createObjectURL(new Blob(blobParts, { type: mime }));
+                  const videoEl = document.getElementById('vlockVideoPlayer');
+                  videoEl.src = currentObjectUrl;
+                  videoEl.play().catch(() => {});
+                  btn.textContent = "✓ Direct Memory Active";
+                } catch (e) {
+                  alert("Direct Memory Mode error: " + e.message);
+                  btn.textContent = "⚡ Direct Memory Mode";
+                  btn.disabled = false;
                 }
               }
 
@@ -1339,7 +1418,6 @@ jobs:
                   const targetKeyId = (await sha256Bytes(kBytes)).slice(0, 15);
                   const wrapMask = await sha256Bytes(concatBytes(kBytes, enc.encode("VLOCK_WRAP")));
 
-                  // Locate VLCK binary header (works for both offset 0 and 2 KB redirect-header files)
                   const probeLen = Math.min(selectedVlockFile.size, 8192);
                   const probeBytes = new Uint8Array(await selectedVlockFile.slice(0, probeLen).arrayBuffer());
                   let vlockStart = -1;
@@ -1435,8 +1513,14 @@ jobs:
 
                   closePlayerStream();
                   const mime = resolveMimeType(ext);
-                  document.getElementById('playerWrap').classList.add('active');
-                  document.getElementById('nowPlayingLabel').textContent = "Now Playing: " + selectedVlockFile.name;
+                  const playerWrap = document.getElementById('playerWrap');
+                  playerWrap.classList.add('active');
+                  document.getElementById('nowPlayingLabel').textContent = selectedVlockFile.name;
+                  const directBtn = document.getElementById('btnDirectBlobMode');
+                  directBtn.disabled = false;
+                  directBtn.textContent = "⚡ Direct Memory Mode";
+
+                  lastDecryptedSessionParams = { file: selectedVlockFile, cryptoKey, nonce8, payloadOffset, payloadSize, mime };
                   const videoEl = document.getElementById('vlockVideoPlayer');
 
                   if (navigator.serviceWorker && navigator.serviceWorker.controller) {
@@ -1445,24 +1529,10 @@ jobs:
                     videoEl.src = `./__vlock_stream__/Episode${ext}?sid=${sid}&size=${payloadSize}&mime=${encodeURIComponent(mime)}`;
                     videoEl.play().catch(() => {});
                   } else {
-                    const blobParts = [];
-                    const chunkSize = 8 * 1024 * 1024;
-                    let offset = 0;
-                    while (offset < payloadSize) {
-                      const len = Math.min(chunkSize, payloadSize - offset);
-                      const encChunk = await selectedVlockFile.slice(payloadOffset + offset, payloadOffset + offset + len).arrayBuffer();
-                      const decChunk = await crypto.subtle.decrypt(
-                        { name: 'AES-CTR', counter: makeCtrIv(nonce8, Math.floor(offset / 16)), length: 64 },
-                        cryptoKey,
-                        encChunk
-                      );
-                      blobParts.push(new Blob([decChunk]));
-                      offset += len;
-                    }
-                    currentObjectUrl = URL.createObjectURL(new Blob(blobParts, { type: mime }));
-                    videoEl.src = currentObjectUrl;
-                    videoEl.play().catch(() => {});
+                    await playViaDirectMemoryBlob(lastDecryptedSessionParams);
                   }
+
+                  playerWrap.scrollIntoView({ behavior: 'smooth', block: 'center' });
                 } catch (err) {
                   alert(err.message);
                 } finally {
@@ -1485,6 +1555,7 @@ jobs:
                   currentObjectUrl = null;
                 }
                 activeStreamSessions = {};
+                lastDecryptedSessionParams = null;
                 document.getElementById('playerWrap').classList.remove('active');
               }
 
@@ -1625,7 +1696,6 @@ jobs:
                   const outHtmlName = `${stem}.html`;
                   const redirectTarget = `${window.location.origin}${window.location.pathname}?play=${encodeURIComponent(outHtmlName)}`;
 
-                  // 2 KB Instant Redirect Header before raw binary VLCK stream
                   const launcherHtml =
                     `<!DOCTYPE html><html><head><meta charset="UTF-8">` +
                     `<meta name="viewport" content="width=device-width,initial-scale=1.0">` +
@@ -1741,9 +1811,14 @@ jobs:
                   handleDecryptAndWatch();
                 });
 
-                // Extra Features Bar Wiring for Browser Native Player
+                // 4-Corner Player Controls
                 const videoEl = document.getElementById('vlockVideoPlayer');
 
+                document.getElementById('btnDirectBlobMode').addEventListener('click', () => {
+                  if (lastDecryptedSessionParams) {
+                    playViaDirectMemoryBlob(lastDecryptedSessionParams);
+                  }
+                });
                 document.getElementById('btnSeekBack10').addEventListener('click', () => {
                   videoEl.currentTime = Math.max(0, (videoEl.currentTime || 0) - 10);
                 });
