@@ -106,7 +106,7 @@ jobs:
             <meta http-equiv="Pragma" content="no-cache" />
             <meta http-equiv="Expires" content="0" />
             <meta name="theme-color" content="#161b22" />
-            <title>VLock v3.0 — User Decryption & Admin Encryption</title>
+            <title>VLock v4.0 — User Decryption & Admin Encryption</title>
             <style>
               :root {
                 --bg-dark: #0d1117;
@@ -214,7 +214,7 @@ jobs:
                 padding: 7px 10px; text-align: center;
               }
 
-              /* PURE BROWSER NATIVE PLAYER: FULL 16:9 HEIGHT SO PLAYBACK SPEED MENU NEVER OVERLAPS */
+              /* PURE BROWSER NATIVE PLAYER WITHOUT DOWNLOAD BUTTON */
               .player-wrap {
                 display: none; width: 100%; background: #000000; border-radius: 8px;
                 margin-top: 8px; border: 1px solid var(--green-border);
@@ -310,7 +310,7 @@ jobs:
             <!-- TOP BAR -->
             <div class="topbar">
               <div class="brand">
-                <h1>VLock v3.0</h1>
+                <h1>VLock v4.0</h1>
                 <span>User Decryption & Admin Encryption</span>
               </div>
               <div class="top-actions">
@@ -712,13 +712,24 @@ jobs:
               let verifiedSuPassword = "";
               let currentObjectUrl = null;
               let autoPlayPendingAfterPick = false;
-              let ffmpegInstance = null;
+              let ffmpegWorker = null;
 
-              // Immediately remove any old Service Workers so virtual stream bugs never occur
               if ('serviceWorker' in navigator) {
                 navigator.serviceWorker.getRegistrations().then((regs) => {
                   for (const reg of regs) reg.unregister();
                 }).catch(() => {});
+              }
+
+              function formatError(err) {
+                if (!err) return "Unknown error occurred.";
+                if (typeof err === "string") return err;
+                if (err.message && typeof err.message === "string") return err.message;
+                if (err.type) return `Browser media/worker event (${err.type})`;
+                try {
+                  return JSON.stringify(err);
+                } catch (e) {
+                  return String(err);
+                }
               }
 
               function hexToBytes(hex) {
@@ -996,7 +1007,7 @@ jobs:
                     alert("Incorrect Superuser Password!");
                   }
                 } catch (err) {
-                  alert("Login error: " + err.message);
+                  alert("Login error: " + formatError(err));
                 } finally {
                   btn.disabled = false;
                   btn.textContent = "Login";
@@ -1046,7 +1057,7 @@ jobs:
                   document.getElementById('suGeneratedKeyOut').value = fullKey;
                   copyTextSafe(fullKey, "Session Key generated and copied to clipboard!");
                 } catch (err) {
-                  alert("Error generating Session Key: " + err.message);
+                  alert("Error generating Session Key: " + formatError(err));
                 }
               }
 
@@ -1109,7 +1120,7 @@ jobs:
                   refreshAdminLockUI();
                   alert("Admin Encryption Panel unlocked for: " + CODE_TO_LABEL[code]);
                 } catch (err) {
-                  alert(err.message);
+                  alert(formatError(err));
                 }
               }
 
@@ -1143,7 +1154,7 @@ jobs:
               }
 
               // =========================================================================
-              // REAL FRAME DECODE PROBE & SAME-ORIGIN FFMPEG WASM ENGINE
+              // VISIBLE PLAYER DECODER VERIFICATION & DIRECT FFMPEG CORE WORKER
               // =========================================================================
               function isAudioOnlyExt(ext) {
                 const e = (ext || '').toLowerCase();
@@ -1160,201 +1171,183 @@ jobs:
                   return [audioMap[e] || 'audio/mp4', ''];
                 }
                 if (firstBytes && firstBytes.length >= 32) {
+                  // EBML header (WebM or Matroska .mkv)
                   if (firstBytes[0] === 0x1A && firstBytes[1] === 0x45 && firstBytes[2] === 0xDF && firstBytes[3] === 0xA3) {
                     const headerAscii = new TextDecoder('ascii', { fatal: false }).decode(firstBytes.slice(0, 48)).toLowerCase();
                     if (headerAscii.includes('webm')) {
                       return ['video/webm', ''];
                     }
-                    return ['', 'video/mp4'];
+                    // Matroska (.mkv): NEVER use video/webm because Chromium rejects H.264/HEVC inside WebM!
+                    return ['', 'video/x-matroska', 'video/mp4'];
                   }
                 }
-                if (e === '.mkv') return ['', 'video/mp4'];
+                if (e === '.mkv') return ['', 'video/x-matroska', 'video/mp4'];
                 if (e === '.webm') return ['video/webm', ''];
                 return ['video/mp4', ''];
               }
 
-              // Verifies in an offscreen <video> probe that the browser's hardware/software decoder
-              // actually decodes real video frames (totalVideoFrames > 0 AND videoWidth > 0)
-              function probeCanDecodeRealVideoFrames(blob, expectVideoTrack, timeoutMs = 2800) {
+              function patchHev1ToHvc1InChunks(chunks) {
+                let patchedAny = false;
+                const out = chunks.map((buf, idx) => {
+                  if (idx !== 0 && idx !== chunks.length - 1) return buf;
+                  const bytes = new Uint8Array(buf);
+                  let copy = null;
+                  for (let i = 4; i < bytes.length - 8; i++) {
+                    if (
+                      bytes[i] === 0x68 && bytes[i + 1] === 0x65 &&
+                      bytes[i + 2] === 0x76 && bytes[i + 3] === 0x31
+                    ) {
+                      if (!copy) copy = new Uint8Array(bytes);
+                      copy[i] = 0x68; copy[i + 1] = 0x76; copy[i + 2] = 0x63; copy[i + 3] = 0x31;
+                      patchedAny = true;
+                    }
+                  }
+                  return copy ? copy.buffer : buf;
+                });
+                return { patchedAny, chunks: out };
+              }
+
+              // Tests playback directly inside the VISIBLE #vlockVideoPlayer element (never offscreen!)
+              // and confirms readyState >= 2 AND videoWidth > 0 so Fullscreen is guaranteed to be enabled.
+              function tryLoadOnVisiblePlayer(videoEl, blob, expectVideoTrack, timeoutMs = 2500) {
                 return new Promise((resolve) => {
-                  const probeVideo = document.createElement('video');
-                  probeVideo.muted = true;
-                  probeVideo.playsInline = true;
-                  probeVideo.preload = 'auto';
-                  probeVideo.style.position = 'fixed';
-                  probeVideo.style.left = '-9999px';
-                  probeVideo.style.width = '64px';
-                  probeVideo.style.height = '64px';
-                  document.body.appendChild(probeVideo);
-
+                  videoEl.pause();
+                  if (currentObjectUrl) {
+                    URL.revokeObjectURL(currentObjectUrl);
+                    currentObjectUrl = null;
+                  }
                   const url = URL.createObjectURL(blob);
+                  currentObjectUrl = url;
                   let done = false;
-
-                  const hasDecodedFrames = () => {
-                    if (!expectVideoTrack) return probeVideo.readyState >= 2 && !probeVideo.error;
-                    if (probeVideo.error) return false;
-                    if (probeVideo.videoWidth <= 0 || probeVideo.videoHeight <= 0) return false;
-                    if (typeof probeVideo.getVideoPlaybackQuality === 'function') {
-                      const q = probeVideo.getVideoPlaybackQuality();
-                      if (q && q.totalVideoFrames > 0) return true;
-                    }
-                    if (typeof probeVideo.webkitDecodedFrameCount === 'number') {
-                      if (probeVideo.webkitDecodedFrameCount > 0) return true;
-                    }
-                    return probeVideo.readyState >= 3 && probeVideo.currentTime > 0.02;
-                  };
 
                   const finish = (ok) => {
                     if (done) return;
                     done = true;
-                    clearInterval(pollTimer);
-                    clearTimeout(maxTimer);
-                    try {
-                      probeVideo.pause();
-                      probeVideo.removeAttribute('src');
-                      probeVideo.load();
-                      probeVideo.remove();
-                    } catch (e) {}
-                    URL.revokeObjectURL(url);
+                    clearInterval(poll);
+                    clearTimeout(timer);
+                    videoEl.onloadedmetadata = null;
+                    videoEl.onloadeddata = null;
+                    videoEl.oncanplay = null;
+                    videoEl.onerror = null;
                     resolve(ok);
                   };
 
-                  const pollTimer = setInterval(() => {
-                    if (probeVideo.error) {
+                  const checkReady = () => {
+                    if (videoEl.error) {
                       finish(false);
-                    } else if (hasDecodedFrames()) {
-                      finish(true);
-                    }
-                  }, 80);
-
-                  const maxTimer = setTimeout(() => {
-                    finish(hasDecodedFrames());
-                  }, timeoutMs);
-
-                  probeVideo.onerror = () => finish(false);
-                  probeVideo.onloadeddata = () => {
-                    if (hasDecodedFrames()) {
-                      finish(true);
                       return;
                     }
-                    probeVideo.play().catch(() => {});
+                    if (!expectVideoTrack) {
+                      if (videoEl.readyState >= 2) finish(true);
+                      return;
+                    }
+                    // Require readyState >= 2 (first frame decoded) AND non-zero video dimensions
+                    if (videoEl.readyState >= 2 && videoEl.videoWidth > 0 && videoEl.videoHeight > 0) {
+                      finish(true);
+                    }
                   };
 
-                  probeVideo.src = url;
-                  probeVideo.load();
-                });
-              }
+                  const poll = setInterval(checkReady, 60);
+                  const timer = setTimeout(() => {
+                    checkReady();
+                    if (!done) finish(false);
+                  }, timeoutMs);
 
-              function loadScriptOnce(src) {
-                return new Promise((resolve, reject) => {
-                  if (document.querySelector(`script[src="${src}"]`)) {
-                    resolve();
-                    return;
-                  }
-                  const s = document.createElement('script');
-                  s.src = src;
-                  s.onload = () => resolve();
-                  s.onerror = () => reject(new Error('Failed to load compatibility script'));
-                  document.head.appendChild(s);
-                });
-              }
-
-              async function toSameOriginBlobUrl(url, mimeType) {
-                const resp = await fetch(url);
-                if (!resp.ok) throw new Error(`Failed to fetch ${url}`);
-                const buf = await resp.arrayBuffer();
-                return URL.createObjectURL(new Blob([buf], { type: mimeType }));
-              }
-
-              async function convertToUniversalPlayableMp4(blobParts, ext, expectVideo, statusCallback) {
-                statusCallback("Loading Universal Video Engine (0% internet upload)...");
-                const ffmpegBase = "https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/umd";
-                const coreBase = "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd";
-
-                await loadScriptOnce(`${ffmpegBase}/ffmpeg.js`);
-
-                if (!ffmpegInstance) {
-                  const { FFmpeg } = window.FFmpegWASM;
-                  ffmpegInstance = new FFmpeg();
-                  ffmpegInstance.on('progress', ({ progress }) => {
-                    const pct = Math.min(99, Math.max(1, Math.round((progress || 0) * 100)));
-                    statusCallback(`Optimizing video for native playback... ${pct}%`);
-                  });
-
-                  const workerBlobUrl = await toSameOriginBlobUrl(`${ffmpegBase}/814.ffmpeg.js`, 'text/javascript');
-                  const coreBlobUrl = await toSameOriginBlobUrl(`${coreBase}/ffmpeg-core.js`, 'text/javascript');
-                  const wasmBlobUrl = await toSameOriginBlobUrl(`${coreBase}/ffmpeg-core.wasm`, 'application/wasm');
-
-                  await ffmpegInstance.load({
-                    classWorkerURL: workerBlobUrl,
-                    coreURL: coreBlobUrl,
-                    wasmURL: wasmBlobUrl
-                  });
-                }
-
-                const inName = "input" + (ext || ".mkv");
-                const remuxName = "remux.mp4";
-                const transcodeName = "universal.mp4";
-
-                const fullUint8 = new Uint8Array(await new Blob(blobParts).arrayBuffer());
-                await ffmpegInstance.writeFile(inName, fullUint8);
-
-                // Stage A: Fast lossless container remux into MP4 (if codec is already hardware-decodable H.264)
-                statusCallback("Remuxing container to native MP4...");
-                const ret1 = await ffmpegInstance.exec([
-                  "-i", inName,
-                  "-map", "0:v:0",
-                  "-map", "0:a:0?",
-                  "-c:v", "copy",
-                  "-c:a", "aac",
-                  "-b:a", "128k",
-                  "-movflags", "+faststart",
-                  remuxName
-                ]);
-
-                if (ret1 === 0) {
-                  try {
-                    const data1 = await ffmpegInstance.readFile(remuxName);
-                    await ffmpegInstance.deleteFile(remuxName).catch(() => {});
-                    if (data1 && data1.byteLength > 1024) {
-                      const remuxBlob = new Blob([data1.buffer], { type: 'video/mp4' });
-                      const canDecodeRemux = await probeCanDecodeRealVideoFrames(remuxBlob, expectVideo, 2500);
-                      if (canDecodeRemux) {
-                        await ffmpegInstance.deleteFile(inName).catch(() => {});
-                        return remuxBlob;
-                      }
+                  videoEl.onerror = () => finish(false);
+                  videoEl.onloadedmetadata = () => {
+                    if (expectVideoTrack && videoEl.videoWidth === 0) {
+                      setTimeout(() => {
+                        if (videoEl.videoWidth === 0) finish(false);
+                      }, 400);
+                    } else {
+                      checkReady();
                     }
-                  } catch (e) {}
-                }
+                  };
+                  videoEl.onloadeddata = checkReady;
+                  videoEl.oncanplay = checkReady;
 
-                // Stage B: Full Universal 8-bit H.264 (yuv420p) + AAC transcode (fixes HEVC / H.265 / 10-bit Hi10P)
-                statusCallback("Converting video codec to Universal H.264 MP4...");
-                const ret2 = await ffmpegInstance.exec([
-                  "-i", inName,
-                  "-map", "0:v:0",
-                  "-map", "0:a:0?",
-                  "-c:v", "libx264",
-                  "-preset", "ultrafast",
-                  "-crf", "23",
-                  "-pix_fmt", "yuv420p",
-                  "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
-                  "-c:a", "aac",
-                  "-ac", "2",
-                  "-b:a", "128k",
-                  "-movflags", "+faststart",
-                  transcodeName
-                ]);
+                  videoEl.src = url;
+                  videoEl.load();
+                });
+              }
 
-                await ffmpegInstance.deleteFile(inName).catch(() => {});
-
-                if (ret2 === 0) {
-                  const data2 = await ffmpegInstance.readFile(transcodeName);
-                  await ffmpegInstance.deleteFile(transcodeName).catch(() => {});
-                  if (data2 && data2.byteLength > 1024) {
-                    return new Blob([data2.buffer], { type: 'video/mp4' });
+              // Self-contained FFmpeg Core Worker (no 814.ffmpeg.js webpack chunk or relative URL bugs)
+              function runFfmpegCoreWorker(inputUint8, inName, outName, args, onProgress) {
+                return new Promise((resolve, reject) => {
+                  if (!ffmpegWorker) {
+                    const workerSrc = `
+                      let core = null;
+                      self.onmessage = async (e) => {
+                        const { cmd, coreJsUrl, wasmUrl, inName, outName, inputBuffer, args } = e.data;
+                        try {
+                          if (!core) {
+                            importScripts(coreJsUrl);
+                            const configHash = btoa(JSON.stringify({ wasmURL: wasmUrl, workerURL: "" }));
+                            core = await self.createFFmpegCore({
+                              mainScriptUrlOrBlob: coreJsUrl + "#" + configHash,
+                              locateFile: (path) => path.endsWith(".wasm") ? wasmUrl : path
+                            });
+                            core.setProgress(({ progress }) => {
+                              self.postMessage({ type: "progress", progress });
+                            });
+                          }
+                          if (cmd === "exec") {
+                            try { core.FS.unlink(inName); } catch (err) {}
+                            try { core.FS.unlink(outName); } catch (err) {}
+                            core.FS.writeFile(inName, new Uint8Array(inputBuffer));
+                            const ret = core.exec(...args);
+                            let outBuf = null;
+                            try {
+                              const fileData = core.FS.readFile(outName);
+                              if (fileData && fileData.byteLength > 512) {
+                                outBuf = fileData.buffer.slice(fileData.byteOffset, fileData.byteOffset + fileData.byteLength);
+                              }
+                            } catch (readErr) {}
+                            try { core.FS.unlink(inName); } catch (err) {}
+                            try { core.FS.unlink(outName); } catch (err) {}
+                            core.reset();
+                            if (outBuf) {
+                              self.postMessage({ type: "done", ok: true, buffer: outBuf }, [outBuf]);
+                            } else {
+                              self.postMessage({ type: "done", ok: false, error: "FFmpeg exited with code " + ret });
+                            }
+                          }
+                        } catch (err) {
+                          const msg = (err && err.message) ? err.message : String(err);
+                          self.postMessage({ type: "done", ok: false, error: msg });
+                        }
+                      };
+                    `;
+                    const wBlob = new Blob([workerSrc], { type: 'application/javascript' });
+                    ffmpegWorker = new Worker(URL.createObjectURL(wBlob));
                   }
-                }
-                throw new Error("Could not convert video stream.");
+
+                  const coreBase = "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd";
+                  ffmpegWorker.onmessage = (e) => {
+                    const data = e.data;
+                    if (!data) return;
+                    if (data.type === "progress" && onProgress) {
+                      onProgress(data.progress || 0);
+                    } else if (data.type === "done") {
+                      if (data.ok && data.buffer) resolve(data.buffer);
+                      else reject(new Error(data.error || "Conversion failed"));
+                    }
+                  };
+                  ffmpegWorker.onerror = (errEvent) => {
+                    reject(new Error(errEvent.message || "FFmpeg worker initialization error"));
+                  };
+
+                  const copyBuf = inputUint8.buffer.slice(inputUint8.byteOffset, inputUint8.byteOffset + inputUint8.byteLength);
+                  ffmpegWorker.postMessage({
+                    cmd: "exec",
+                    coreJsUrl: `${coreBase}/ffmpeg-core.js`,
+                    wasmUrl: `${coreBase}/ffmpeg-core.wasm`,
+                    inName,
+                    outName,
+                    inputBuffer: copyBuf,
+                    args
+                  }, [copyBuf]);
+                });
               }
 
               async function handleDecryptAndWatch() {
@@ -1512,48 +1505,80 @@ jobs:
                     return;
                   }
 
-                  setBtnsText("Verifying Native Video Decoder...", true);
+                  // Make player visible BEFORE loading so the browser hardware video decoder is active
+                  document.getElementById('instantKeyModal').classList.remove('show');
+                  const playerWrap = document.getElementById('playerWrap');
+                  const videoEl = document.getElementById('vlockVideoPlayer');
+                  playerWrap.classList.add('active');
 
                   const expectVideo = !isAudioOnlyExt(ext);
                   const candidateMimes = getCandidateMimes(ext, firstChunkBytes);
-                  let playableBlob = null;
+                  let playable = false;
 
-                  // Stage 1: Probe whether the device hardware decoder actually decodes real video frames (totalVideoFrames > 0)
+                  // Stage 1: Test direct native playback on the visible <video> element
                   for (const mime of candidateMimes) {
                     const testBlob = mime ? new Blob(blobParts, { type: mime }) : new Blob(blobParts);
-                    const ok = await probeCanDecodeRealVideoFrames(testBlob, expectVideo, 2500);
-                    if (ok) {
-                      playableBlob = testBlob;
-                      break;
+                    playable = await tryLoadOnVisiblePlayer(videoEl, testBlob, expectVideo, 2200);
+                    if (playable) break;
+                  }
+
+                  // Stage 2: If HEVC MP4 uses 'hev1' tag, patch to 'hvc1' and test
+                  if (!playable && expectVideo) {
+                    const patched = patchHev1ToHvc1InChunks(blobParts);
+                    if (patched.patchedAny) {
+                      playable = await tryLoadOnVisiblePlayer(
+                        videoEl,
+                        new Blob(patched.chunks, { type: 'video/mp4' }),
+                        true,
+                        2200
+                      );
                     }
                   }
 
-                  // Stage 2: If 0 frames decoded (e.g. MKV/HEVC/10-bit H.264), convert via same-origin FFmpeg.wasm into Universal H.264 MP4
-                  if (!playableBlob) {
-                    playableBlob = await convertToUniversalPlayableMp4(blobParts, ext, expectVideo, (msg) => setBtnsText(msg, true));
+                  // Stage 3: If container/codec still had videoWidth === 0, remux/transcode via direct FFmpeg Core Worker
+                  if (!playable && expectVideo) {
+                    const fullBytes = new Uint8Array(await new Blob(blobParts).arrayBuffer());
+                    const inName = "input" + (ext || ".mkv");
+
+                    // 3A: Fast lossless stream remux to MP4 with stereo AAC audio
+                    try {
+                      setBtnsText("Remuxing container to native MP4...", true);
+                      const remuxBuf = await runFfmpegCoreWorker(
+                        fullBytes,
+                        inName,
+                        "remux.mp4",
+                        ["-i", inName, "-map", "0:v:0", "-map", "0:a:0?", "-c:v", "copy", "-c:a", "aac", "-ac", "2", "-b:a", "128k", "-movflags", "+faststart", "remux.mp4"],
+                        (p) => setBtnsText(`Remuxing container... ${Math.min(99, Math.round(p * 100))}%`, true)
+                      );
+                      playable = await tryLoadOnVisiblePlayer(videoEl, new Blob([remuxBuf], { type: 'video/mp4' }), true, 2500);
+                    } catch (remuxErr) {}
+
+                    // 3B: Full Universal 8-bit H.264 (yuv420p) + AAC transcode if codec is 10-bit or unsupported HEVC
+                    if (!playable) {
+                      setBtnsText("Converting codec to Universal H.264 MP4...", true);
+                      const transBuf = await runFfmpegCoreWorker(
+                        fullBytes,
+                        inName,
+                        "universal.mp4",
+                        [
+                          "-i", inName, "-map", "0:v:0", "-map", "0:a:0?",
+                          "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23", "-pix_fmt", "yuv420p",
+                          "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
+                          "-c:a", "aac", "-ac", "2", "-b:a", "128k", "-movflags", "+faststart", "universal.mp4"
+                        ],
+                        (p) => setBtnsText(`Converting codec for native playback... ${Math.min(99, Math.round(p * 100))}%`, true)
+                      );
+                      playable = await tryLoadOnVisiblePlayer(videoEl, new Blob([transBuf], { type: 'video/mp4' }), true, 3000);
+                    }
                   }
 
-                  // Burn temporary key only after playable stream is ready
                   burnedKeys[keyHex] = Date.now();
                   localStorage.setItem('vlock_burned_keys', JSON.stringify(burnedKeys));
 
-                  const videoEl = document.getElementById('vlockVideoPlayer');
-                  videoEl.pause();
-                  if (currentObjectUrl) {
-                    URL.revokeObjectURL(currentObjectUrl);
-                    currentObjectUrl = null;
-                  }
-
-                  currentObjectUrl = URL.createObjectURL(playableBlob);
-                  document.getElementById('playerWrap').classList.add('active');
-                  document.getElementById('instantKeyModal').classList.remove('show');
-
-                  videoEl.src = currentObjectUrl;
-                  videoEl.load();
                   videoEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
                   await videoEl.play().catch(() => {});
                 } catch (err) {
-                  alert(err.message);
+                  alert("Decryption / Playback Error: " + formatError(err));
                 } finally {
                   setBtnsText("▶ Decrypt & Watch / Unlock", false);
                   if (modalBtn) modalBtn.textContent = "▶ Decrypt & Watch Now";
@@ -1729,8 +1754,8 @@ jobs:
                   await saveBlobToDisk(finalBlob, outFileName);
                   statusEl.textContent = `Done! Saved ${outFileName} & bot_keys.txt to your device.`;
                 } catch (err) {
-                  alert("Encryption error: " + err.message);
-                  statusEl.textContent = "Error: " + err.message;
+                  alert("Encryption error: " + formatError(err));
+                  statusEl.textContent = "Error: " + formatError(err);
                 } finally {
                   btn.disabled = false;
                 }
@@ -1830,7 +1855,7 @@ jobs:
                 document.getElementById('menuCopyright').addEventListener('click', () => {
                   document.getElementById('infoModalTitle').textContent = "Copyright & Legal Notice";
                   document.getElementById('infoModalBody').textContent =
-                    "VLock Media Security Suite v3.0\n© 2026 VLock Studio. All Rights Reserved.\n\n" +
+                    "VLock Media Security Suite v4.0\n© 2026 VLock Studio. All Rights Reserved.\n\n" +
                     "This software and its cryptographic stream architecture are protected by copyright law and international treaties. " +
                     "Unauthorized reproduction, reverse engineering, or tampering may result in severe civil and criminal penalties.\n\n" +
                     "For any issue contact @Modrat_editor using Telegram.";
