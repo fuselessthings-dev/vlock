@@ -73,9 +73,21 @@ jobs:
           enc_d_hex = (enc.update(d_raw32) + enc.finalize()).hex()
 
           # =====================================================================
-          # 2. SERVICE WORKER (LOCAL 64-BIT VIDEO STREAMING ONLY)
+          # 2. SERVICE WORKER (DIRECT 1 MB CHUNKED STREAMING ENGINE v6)
           # =====================================================================
-          sw_js = r'''self.addEventListener('install', (event) => {
+          sw_js = r'''// VLock Stream Engine v6
+          const swStreams = {};
+
+          function makeCtrIvSw(nonce8, blockIndex) {
+            const iv = new Uint8Array(16);
+            iv.set(nonce8.slice(0, 8), 0);
+            const dv = new DataView(iv.buffer);
+            dv.setUint32(8, Math.floor(blockIndex / 4294967296), false);
+            dv.setUint32(12, blockIndex >>> 0, false);
+            return iv;
+          }
+
+          self.addEventListener('install', (event) => {
             self.skipWaiting();
           });
 
@@ -83,9 +95,35 @@ jobs:
             event.waitUntil(self.clients.claim());
           });
 
-          self.addEventListener('message', (event) => {
-            if (event.data && event.data.type === 'VLOCK_CLAIM') {
-              event.waitUntil(self.clients.claim());
+          self.addEventListener('message', async (event) => {
+            const data = event.data;
+            if (!data) return;
+            if (data.type === 'VLOCK_REGISTER_STREAM') {
+              try {
+                const cryptoKey = await self.crypto.subtle.importKey(
+                  'raw',
+                  data.masterKey,
+                  'AES-CTR',
+                  false,
+                  ['decrypt']
+                );
+                swStreams[data.sid] = {
+                  file: data.file,
+                  cryptoKey,
+                  nonce8: data.nonce8,
+                  payloadOffset: data.payloadOffset,
+                  payloadSize: data.payloadSize
+                };
+                if (event.ports && event.ports[0]) {
+                  event.ports[0].postMessage({ registered: true });
+                }
+              } catch (e) {
+                if (event.ports && event.ports[0]) {
+                  event.ports[0].postMessage({ registered: false });
+                }
+              }
+            } else if (data.type === 'VLOCK_CLEAR_STREAMS') {
+              for (const k of Object.keys(swStreams)) delete swStreams[k];
             }
           });
 
@@ -116,45 +154,71 @@ jobs:
                 isPartial = true;
               }
 
-              const clientsList = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
-              if (!clientsList || clientsList.length === 0) {
-                return new Response('Stream closed', { status: 404 });
+              let chunkBuffer = null;
+
+              // Fast Path 1: Decrypt directly inside Service Worker (< 1ms, no IPC delay)
+              const directSess = swStreams[sid];
+              if (directSess && directSess.file) {
+                try {
+                  const contentLen = (end - start) + 1;
+                  const blockIndex = Math.floor(start / 16);
+                  const byteSkip = start % 16;
+                  const readStart = directSess.payloadOffset + (blockIndex * 16);
+                  const readEnd = Math.min(directSess.file.size, readStart + contentLen + byteSkip + 16);
+                  const encBuf = await directSess.file.slice(readStart, readEnd).arrayBuffer();
+                  const decFull = await self.crypto.subtle.decrypt(
+                    { name: 'AES-CTR', counter: makeCtrIvSw(directSess.nonce8, blockIndex), length: 64 },
+                    directSess.cryptoKey,
+                    encBuf
+                  );
+                  chunkBuffer = decFull.slice(byteSkip, byteSkip + contentLen);
+                } catch (e) {
+                  chunkBuffer = null;
+                }
               }
 
-              const chunkBuffer = await new Promise((resolve, reject) => {
-                let settled = false;
-                let failCount = 0;
-                const timer = setTimeout(() => {
-                  if (!settled) {
-                    settled = true;
-                    reject(new Error('Stream timeout'));
-                  }
-                }, 10000);
+              // Fast Path 2: Parallel client pull if worker woke up fresh
+              if (!chunkBuffer) {
+                const clientsList = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+                if (!clientsList || clientsList.length === 0) {
+                  return new Response('Stream closed', { status: 404 });
+                }
 
-                clientsList.forEach((client) => {
-                  const channel = new MessageChannel();
-                  channel.port1.onmessage = (e) => {
-                    if (settled) return;
-                    if (e.data && e.data.ok && e.data.buffer) {
-                      settled = true;
-                      clearTimeout(timer);
-                      resolve(e.data.buffer);
-                    } else {
-                      failCount++;
-                      if (failCount >= clientsList.length) {
-                        settled = true;
-                        clearTimeout(timer);
-                        reject(new Error('Read error'));
-                      }
+                chunkBuffer = await new Promise((resolve, reject) => {
+                  let done = false;
+                  let failed = 0;
+                  const timer = setTimeout(() => {
+                    if (!done) {
+                      done = true;
+                      reject(new Error('Stream timeout'));
                     }
-                  };
-                  try {
-                    client.postMessage({ type: 'VLOCK_STREAM_PULL', sid, start, end }, [channel.port2]);
-                  } catch (err) {
-                    failCount++;
-                  }
+                  }, 8000);
+
+                  clientsList.forEach((client) => {
+                    const channel = new MessageChannel();
+                    channel.port1.onmessage = (e) => {
+                      if (done) return;
+                      if (e.data && e.data.ok && e.data.buffer) {
+                        done = true;
+                        clearTimeout(timer);
+                        resolve(e.data.buffer);
+                      } else {
+                        failed++;
+                        if (failed >= clientsList.length) {
+                          done = true;
+                          clearTimeout(timer);
+                          reject(new Error('Read error'));
+                        }
+                      }
+                    };
+                    try {
+                      client.postMessage({ type: 'VLOCK_STREAM_PULL', sid, start, end }, [channel.port2]);
+                    } catch (err) {
+                      failed++;
+                    }
+                  });
                 });
-              });
+              }
 
               const byteLen = chunkBuffer.byteLength;
               const headers = new Headers({
@@ -290,7 +354,7 @@ jobs:
                 padding: 7px 10px; text-align: center;
               }
 
-              /* BROWSER NATIVE PLAYER ONLY (NO EXTRA BUTTONS, NO DOWNLOAD OPTION) */
+              /* CLEAN BROWSER NATIVE PLAYER ONLY (NO EXTRA BUTTONS, NO DOWNLOAD) */
               .player-wrap {
                 display: none; flex-direction: column; gap: 8px; background: #000000; border-radius: 10px;
                 padding: 10px; border: 1px solid var(--green-border); margin-top: 4px;
@@ -364,7 +428,7 @@ jobs:
               .footer a { color: #58a6ff; text-decoration: underline; cursor: pointer; }
 
               .modal-backdrop {
-                position: fixed; inset: 0; background: rgba(0,0,0,0.82); display: none; align-items: center;
+                position: fixed; inset: 0; background: rgba(0,0,0,0.8); display: none; align-items: center;
                 justify-content: center; padding: 16px; z-index: 300;
               }
               .modal-backdrop.show { display: flex; }
@@ -412,7 +476,7 @@ jobs:
                   <small>FREE FOREVER • ZERO DATA UPLOAD</small>
                 </div>
 
-                <input type="file" id="vlockFileInput" accept=".html,.htm,.vlock,*/*" style="display:none" />
+                <input type="file" id="vlockFileInput" accept=".htm,.html,.vlock,*/*" style="display:none" />
                 <div class="nle-dropzone" id="viewerDropZone">
                   <svg class="nle-icon" viewBox="0 0 52 48" fill="none">
                     <path d="M6 14 V6 H14 M38 6 H46 V14 M6 34 V42 H14 M38 42 H46 V34" stroke="#3fb950" stroke-width="2.5" stroke-linecap="round"/>
@@ -440,14 +504,7 @@ jobs:
                     <span id="nowPlayingLabel" style="font-size:12px;color:#3fb950;font-weight:700;">Playing Decrypted Stream</span>
                     <button type="button" class="btn btn-dark" id="btnCloseStream" style="padding:4px 10px;font-size:11px;">Close Player</button>
                   </div>
-                  <video
-                    id="vlockVideoPlayer"
-                    controls
-                    playsinline
-                    controlsList="nodownload"
-                    disablePictureInPicture
-                    oncontextmenu="return false;"
-                  ></video>
+                  <video id="vlockVideoPlayer" controls playsinline controlsList="nodownload" oncontextmenu="return false;"></video>
                 </div>
               </div>
 
@@ -553,7 +610,7 @@ jobs:
                       <svg width="210" height="100" viewBox="0 0 210 100" fill="none">
                         <rect x="10" y="15" width="75" height="70" rx="10" fill="#1b2738" stroke="#388bfd" stroke-width="2"/>
                         <text x="47" y="45" fill="#58a6ff" font-size="11" font-weight="bold" text-anchor="middle">Telegram</text>
-                        <text x="47" y="62" fill="#8b949e" font-size="9" text-anchor="middle">Episode.html</text>
+                        <text x="47" y="62" fill="#8b949e" font-size="9" text-anchor="middle">Episode.htm</text>
                         <path d="M95 50 H120 M114 44 L122 50 L114 56" stroke="#3fb950" stroke-width="2.5" stroke-linecap="round"/>
                         <rect x="130" y="15" width="70" height="70" rx="12" fill="#0b2419" stroke="#3fb950" stroke-width="2"/>
                         <rect x="151" y="42" width="28" height="24" rx="4" fill="#143d29" stroke="#3fb950" stroke-width="2"/>
@@ -573,12 +630,12 @@ jobs:
                         <rect x="15" y="14" width="180" height="72" rx="10" fill="#071710" stroke="#3fb950" stroke-width="2" stroke-dasharray="6 4"/>
                         <rect x="35" y="32" width="36" height="32" rx="4" stroke="#3fb950" stroke-width="2"/>
                         <path d="M53 41 V55 M46 48 H60" stroke="#ffffff" stroke-width="2.5" stroke-linecap="round"/>
-                        <text x="84" y="46" fill="#ffffff" font-size="11" font-weight="bold">Tap or Click Video</text>
+                        <text x="84" y="46" fill="#ffffff" font-size="11" font-weight="bold">Tap or Drop Video</text>
                         <text x="84" y="62" fill="#3fb950" font-size="9">Green User Panel</text>
                       </svg>
                     </div>
-                    <h4>2. Click File or Add to Green Panel</h4>
-                    <p>Click the downloaded file to open VLock (or tap the dashed box in the green <b>USER PANEL • Decryption Panel</b>).</p>
+                    <h4>2. Add Video to Green User Panel</h4>
+                    <p>In the green <b>USER PANEL • Decryption Panel</b> at the top, tap the dashed box (or drag & drop your encrypted file directly into it).</p>
                   </div>
 
                   <div class="step-card">
@@ -619,4 +676,523 @@ jobs:
                     <span class="step-badge badge-red">STEP 2 • CHOOSE KEYS</span>
                     <div class="step-visual">
                       <svg width="210" height="100" viewBox="0 0 210 100" fill="none">
-                        <rect x="15" y="20" width="65" height="28" rx="
+                        <rect x="15" y="20" width="65" height="28" rx="6" fill="#140507" stroke="#da3633" stroke-width="1.5"/>
+                        <text x="47" y="38" fill="#ff7b72" font-family="monospace" font-size="11" font-weight="bold" text-anchor="middle">1000</text>
+                        <rect x="92" y="24" width="20" height="20" rx="4" fill="#da3633"/>
+                        <path d="M97 34 L101 38 L108 29" stroke="#ffffff" stroke-width="2.5" stroke-linecap="round"/>
+                        <text x="118" y="38" fill="#ffffff" font-size="9.5" font-weight="bold">Permanent Master</text>
+                        <text x="15" y="72" fill="#ffa198" font-size="9.5">• Temp Keys = One-Time Watch</text>
+                        <text x="15" y="86" fill="#3fb950" font-size="9.5">• Masterkey = Restore Original</text>
+                      </svg>
+                    </div>
+                    <h4>2. Set Temporary or Masterkey</h4>
+                    <p>Select your video file, then type how many <b>Temporary Keys</b> you want (e.g. 500 or 1000) and/or check <b>Permanent Masterkey</b> to generate a permanent restore key.</p>
+                  </div>
+
+                  <div class="step-card">
+                    <span class="step-badge badge-red">STEP 3 • ENCRYPT LOCALLY</span>
+                    <div class="step-visual">
+                      <svg width="210" height="100" viewBox="0 0 210 100" fill="none">
+                        <rect x="18" y="18" width="80" height="64" rx="8" fill="#140507" stroke="#f85149" stroke-width="2"/>
+                        <text x="58" y="46" fill="#ff7b72" font-size="10" font-weight="bold" text-anchor="middle">Video.htm</text>
+                        <text x="58" y="62" fill="#8b949e" font-size="8" text-anchor="middle">Encrypted File</text>
+                        <rect x="112" y="18" width="80" height="64" rx="8" fill="#0b2419" stroke="#3fb950" stroke-width="2"/>
+                        <text x="152" y="46" fill="#3fb950" font-size="10" font-weight="bold" text-anchor="middle">bot_keys.txt</text>
+                        <text x="152" y="62" fill="#8b949e" font-size="8" text-anchor="middle">Paste in Bot</text>
+                      </svg>
+                    </div>
+                    <h4>3. Save Encrypted Video & bot_keys.txt</h4>
+                    <p>Tap <b>Encrypt Media & Generate Keys</b>. Your browser encrypts the video locally on your device (0 MB upload) and saves both the encrypted file and <b>bot_keys.txt</b>!</p>
+                  </div>
+                </div>
+
+                <!-- TAB 3: HOW TO GET A SESSION KEY (@Modrat_editor) -->
+                <div class="tutorial-grid" id="tutGridSession" style="display:none;">
+                  <div class="step-card">
+                    <span class="step-badge badge-blue">STEP 1 • CONTACT ADMIN</span>
+                    <div class="step-visual">
+                      <svg width="210" height="100" viewBox="0 0 210 100" fill="none">
+                        <circle cx="55" cy="50" r="28" fill="#1f6feb"/>
+                        <path d="M42 50 L65 40 L60 62 L52 54 Z" fill="#ffffff"/>
+                        <text x="135" y="44" fill="#ffffff" font-size="11" font-weight="bold" text-anchor="middle">@Modrat_editor</text>
+                        <rect x="92" y="54" width="86" height="22" rx="11" fill="#1f3a60"/>
+                        <text x="135" y="69" fill="#58a6ff" font-size="9.5" font-weight="bold" text-anchor="middle">Message on TG</text>
+                      </svg>
+                    </div>
+                    <h4>1. Contact @Modrat_editor on Telegram</h4>
+                    <p>To unlock the red <b>ADMIN • Encryption Panel</b>, message <a href="https://t.me/Modrat_editor" target="_blank" style="color:#58a6ff;font-weight:bold;">@Modrat_editor</a> on Telegram (or tap the <b>⋮</b> menu at the top right).</p>
+                  </div>
+
+                  <div class="step-card">
+                    <span class="step-badge badge-blue">STEP 2 • CHOOSE PLAN</span>
+                    <div class="step-visual">
+                      <svg width="210" height="100" viewBox="0 0 210 100" fill="none">
+                        <rect x="16" y="18" width="82" height="26" rx="5" fill="#161b22" stroke="#30363d"/>
+                        <text x="57" y="35" fill="#c9d1d9" font-size="9.5" font-weight="bold" text-anchor="middle">1 Day / 1 Week</text>
+                        <rect x="110" y="18" width="82" height="26" rx="5" fill="#161b22" stroke="#30363d"/>
+                        <text x="151" y="35" fill="#c9d1d9" font-size="9.5" font-weight="bold" text-anchor="middle">1 Month / 1 Year</text>
+                        <rect x="45" y="54" width="120" height="28" rx="6" fill="#143d29" stroke="#3fb950"/>
+                        <text x="105" y="72" fill="#3fb950" font-size="10" font-weight="bold" text-anchor="middle">★ Lifetime Access</text>
+                      </svg>
+                    </div>
+                    <h4>2. Choose Your Duration</h4>
+                    <p>Let <b>@Modrat_editor</b> know which encryption access duration you need: <b>1 Day</b>, <b>1 Week</b>, <b>1 Month</b>, <b>1 Year</b>, or <b>Lifetime</b>.</p>
+                  </div>
+
+                  <div class="step-card">
+                    <span class="step-badge badge-blue">STEP 3 • ACTIVATE KEY</span>
+                    <div class="step-visual">
+                      <svg width="210" height="100" viewBox="0 0 210 100" fill="none">
+                        <rect x="20" y="25" width="170" height="50" rx="8" fill="#260c10" stroke="#da3633" stroke-width="2"/>
+                        <text x="105" y="46" fill="#3fb950" font-size="10" font-weight="bold" text-anchor="middle">✓ Admin Panel Unlocked</text>
+                        <text x="105" y="63" fill="#ffdcd7" font-size="9" text-anchor="middle">Ready to Encrypt Videos</text>
+                      </svg>
+                    </div>
+                    <h4>3. Paste & Unlock</h4>
+                    <p>Paste the <b>VLKS-...</b> Session Key you receive into the red Admin Panel and click <b>Unlock</b>. You can now encrypt unlimited videos for that duration!</p>
+                  </div>
+                </div>
+              </div>
+
+            </div>
+
+            <!-- FOOTER -->
+            <div class="footer">
+              © 2026 VLock Media Security. All Rights Reserved. &nbsp;•&nbsp;
+              For any issue contact <a href="https://t.me/Modrat_editor" target="_blank" rel="noopener">@Modrat_editor</a> using Telegram.
+            </div>
+
+            <!-- SUPERUSER MODAL -->
+            <div class="modal-backdrop" id="superuserModal">
+              <div class="modal">
+                <h2>Superuser Panel</h2>
+                <div id="suLoginBox" style="display:flex;flex-direction:column;gap:12px;">
+                  <p>Enter Superuser Password:</p>
+                  <div class="input-row">
+                    <input type="password" id="suPasswordInput" class="input-box" style="border-color:#30363d;color:#58a6ff;background:#0d1117;" placeholder="Enter Password" />
+                    <button type="button" class="btn btn-dark" id="btnPasteSuPwd">Paste</button>
+                  </div>
+                  <div style="display:flex;gap:8px;justify-content:flex-end;">
+                    <button type="button" class="btn btn-dark" id="btnCloseSuModal1">Cancel</button>
+                    <button type="button" class="btn btn-green" id="btnLoginSu">Login</button>
+                  </div>
+                </div>
+
+                <div id="suGeneratorBox" style="display:none;flex-direction:column;gap:12px;">
+                  <p>Select Access Duration to Generate Session Key:</p>
+                  <select id="suDurationSelect">
+                    <option value="1D">1 Day</option>
+                    <option value="1W">1 Week</option>
+                    <option value="1M">1 Month</option>
+                    <option value="1Y">1 Year</option>
+                    <option value="LT">Lifetime</option>
+                  </select>
+                  <input type="text" id="suGeneratedKeyOut" class="input-box" style="font-size:11px;" readonly placeholder="Click Generate Session Key" />
+                  <div style="display:flex;gap:8px;">
+                    <button type="button" class="btn btn-blue" id="btnGenerateSuKey" style="flex:1">Generate Session Key</button>
+                    <button type="button" class="btn btn-green" id="btnCopySuKey">Copy Key</button>
+                  </div>
+                  <div style="display:flex;justify-content:space-between;margin-top:6px;">
+                    <button type="button" class="btn btn-red" id="btnLockDevice" style="padding:6px 10px;font-size:11px;">Lock This Device</button>
+                    <button type="button" class="btn btn-dark" id="btnCloseSuModal2">Done</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- SUPPORT & COPYRIGHT MODAL -->
+            <div class="modal-backdrop" id="infoModal">
+              <div class="modal">
+                <h2 id="infoModalTitle">Notice</h2>
+                <p id="infoModalBody"></p>
+                <div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;">
+                  <button type="button" class="btn btn-dark" id="btnCopyTelegram">Copy @Modrat_editor</button>
+                  <a href="https://t.me/Modrat_editor" target="_blank" rel="noopener" class="btn btn-blue">Open Telegram</a>
+                  <button type="button" class="btn btn-dark" id="btnCloseInfoModal">Close</button>
+                </div>
+              </div>
+            </div>
+
+            <script>
+              const ZK_SALT_HEX = "__ZK_SALT_HEX__";
+              const ZK_VERIFIER_HEX = "__ZK_VERIFIER_HEX__";
+              const ZK_ENC_D_HEX = "__ZK_ENC_D_HEX__";
+              const ZK_PUB_X_B64U = "__ZK_PUB_X_B64U__";
+              const ZK_PUB_Y_B64U = "__ZK_PUB_Y_B64U__";
+              const SLOT_SIZE = 48;
+
+              const CODE_TO_SECONDS = { "1D": 86400, "1W": 7 * 86400, "1M": 30 * 86400, "1Y": 365 * 86400, "LT": -1 };
+              const CODE_TO_LABEL = { "1D": "1 Day", "1W": "1 Week", "1M": "1 Month", "1Y": "1 Year", "LT": "Lifetime" };
+
+              let selectedVlockFile = null;
+              let selectedRawMediaFile = null;
+              let customDirectoryHandle = null;
+              let lastGeneratedKeysContent = "";
+              let verifiedSuPassword = "";
+              let activeStreamSessions = {};
+              let currentObjectUrl = null;
+
+              function hexToBytes(hex) {
+                const out = new Uint8Array(hex.length / 2);
+                for (let i = 0; i < out.length; i++) out[i] = parseInt(hex.substr(i * 2, 2), 16);
+                return out;
+              }
+
+              function bytesToHex(bytes) {
+                return Array.from(new Uint8Array(bytes)).map(b => b.toString(16).padStart(2, '0')).join('');
+              }
+
+              function bytesToBase64Url(bytes) {
+                let bin = "";
+                const arr = new Uint8Array(bytes);
+                for (let i = 0; i < arr.length; i++) bin += String.fromCharCode(arr[i]);
+                return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+              }
+
+              function concatBytes(a, b) {
+                const out = new Uint8Array(a.length + b.length);
+                out.set(a, 0);
+                out.set(b, a.length);
+                return out;
+              }
+
+              async function sha256Bytes(data) {
+                return new Uint8Array(await crypto.subtle.digest('SHA-256', data));
+              }
+
+              function makeCtrIv(nonce8, blockIndex) {
+                const iv = new Uint8Array(16);
+                iv.set(nonce8.slice(0, 8), 0);
+                const dv = new DataView(iv.buffer);
+                dv.setUint32(8, Math.floor(blockIndex / 4294967296), false);
+                dv.setUint32(12, blockIndex >>> 0, false);
+                return iv;
+              }
+
+              const B32_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+              function base32Encode(bytes) {
+                let out = "", buf = 0, bits = 0;
+                for (let i = 0; i < bytes.length; i++) {
+                  buf = (buf << 8) | bytes[i];
+                  bits += 8;
+                  while (bits >= 5) {
+                    out += B32_ALPHABET[(buf >>> (bits - 5)) & 31];
+                    bits -= 5;
+                  }
+                }
+                if (bits > 0) out += B32_ALPHABET[(buf << (5 - bits)) & 31];
+                return out;
+              }
+
+              function base32Decode(str) {
+                const out = [];
+                let buf = 0, bits = 0;
+                for (let i = 0; i < str.length; i++) {
+                  const v = B32_ALPHABET.indexOf(str[i]);
+                  if (v < 0) continue;
+                  buf = (buf << 5) | v;
+                  bits += 5;
+                  if (bits >= 8) {
+                    out.push((buf >>> (bits - 8)) & 255);
+                    bits -= 8;
+                  }
+                }
+                return new Uint8Array(out);
+              }
+
+              async function deriveZkKdf(passwordStr) {
+                const enc = new TextEncoder();
+                const baseKey = await crypto.subtle.importKey('raw', enc.encode(passwordStr), 'PBKDF2', false, ['deriveBits']);
+                const bits = await crypto.subtle.deriveBits(
+                  { name: 'PBKDF2', salt: hexToBytes(ZK_SALT_HEX), iterations: 200000, hash: 'SHA-256' },
+                  baseKey,
+                  256
+                );
+                return new Uint8Array(bits);
+              }
+
+              // =========================================================================
+              // SERVICE WORKER REGISTRATION (CACHE-BUSTED v6 FOR INSTANT STREAMING)
+              // =========================================================================
+              if ('serviceWorker' in navigator) {
+                navigator.serviceWorker.register('./sw.js?v=6', { updateViaCache: 'none' }).then((reg) => {
+                  reg.update().catch(() => {});
+                }).catch(() => {});
+
+                navigator.serviceWorker.addEventListener('message', async (event) => {
+                  const data = event.data;
+                  if (!data || data.type !== 'VLOCK_STREAM_PULL') return;
+                  const port = event.ports[0];
+                  const sess = activeStreamSessions[data.sid];
+                  if (!sess) {
+                    port.postMessage({ ok: false });
+                    return;
+                  }
+                  try {
+                    const start = data.start;
+                    const end = data.end;
+                    const contentLen = (end - start) + 1;
+                    const blockIndex = Math.floor(start / 16);
+                    const byteSkip = start % 16;
+
+                    const readStart = sess.payloadOffset + (blockIndex * 16);
+                    const readEnd = Math.min(sess.file.size, readStart + contentLen + byteSkip + 16);
+                    const encBuf = await sess.file.slice(readStart, readEnd).arrayBuffer();
+
+                    const decFull = await crypto.subtle.decrypt(
+                      { name: 'AES-CTR', counter: makeCtrIv(sess.nonce8, blockIndex), length: 64 },
+                      sess.cryptoKey,
+                      encBuf
+                    );
+                    const sliced = decFull.slice(byteSkip, byteSkip + contentLen);
+                    port.postMessage({ ok: true, buffer: sliced }, [sliced]);
+                  } catch (err) {
+                    port.postMessage({ ok: false });
+                  }
+                });
+              }
+
+              async function ensureServiceWorkerReady() {
+                if (!('serviceWorker' in navigator)) return false;
+                if (navigator.serviceWorker.controller) return true;
+                try {
+                  const reg = await navigator.serviceWorker.register('./sw.js?v=6', { updateViaCache: 'none' });
+                  await reg.update().catch(() => {});
+                  await Promise.race([
+                    navigator.serviceWorker.ready,
+                    new Promise(r => setTimeout(r, 1500))
+                  ]);
+                  if (!navigator.serviceWorker.controller) {
+                    await new Promise((resolve) => {
+                      const t = setTimeout(resolve, 800);
+                      navigator.serviceWorker.addEventListener('controllerchange', () => {
+                        clearTimeout(t);
+                        resolve();
+                      }, { once: true });
+                    });
+                  }
+                } catch (e) {}
+                return !!navigator.serviceWorker.controller;
+              }
+
+              async function registerStreamInWorker(sid, file, masterKey, nonce8, payloadOffset, payloadSize) {
+                if (!navigator.serviceWorker || !navigator.serviceWorker.controller) return;
+                try {
+                  await new Promise((resolve) => {
+                    const chan = new MessageChannel();
+                    const timer = setTimeout(resolve, 300);
+                    chan.port1.onmessage = () => {
+                      clearTimeout(timer);
+                      resolve();
+                    };
+                    navigator.serviceWorker.controller.postMessage(
+                      {
+                        type: 'VLOCK_REGISTER_STREAM',
+                        sid,
+                        file,
+                        masterKey,
+                        nonce8,
+                        payloadOffset,
+                        payloadSize
+                      },
+                      [chan.port2]
+                    );
+                  });
+                } catch (e) {}
+              }
+
+              function onVlockFilePicked(file) {
+                if (!file) return;
+                selectedVlockFile = file;
+                const sizeMb = (file.size / (1024 * 1024)).toFixed(1);
+                document.getElementById('viewerFileTitle').textContent = `Ready to Unlock: ${file.name} (${sizeMb} MB)`;
+                document.getElementById('viewerKeyInput').focus();
+              }
+
+              function onRawMediaPicked(file) {
+                if (!file) return;
+                selectedRawMediaFile = file;
+                const sizeMb = (file.size / (1024 * 1024)).toFixed(1);
+                document.getElementById('encryptFileTitle').textContent = `Selected: ${file.name} (${sizeMb} MB)`;
+              }
+
+              function bindDropZone(zoneId, inputId, callback) {
+                const zone = document.getElementById(zoneId);
+                const input = document.getElementById(inputId);
+                zone.addEventListener('click', () => input.click());
+                input.addEventListener('change', () => {
+                  if (input.files && input.files.length > 0) callback(input.files[0]);
+                });
+                zone.addEventListener('dragover', (e) => {
+                  e.preventDefault();
+                  zone.classList.add('dragover');
+                });
+                zone.addEventListener('dragleave', () => zone.classList.remove('dragover'));
+                zone.addEventListener('drop', (e) => {
+                  e.preventDefault();
+                  zone.classList.remove('dragover');
+                  if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                    callback(e.dataTransfer.files[0]);
+                  }
+                });
+              }
+
+              async function pasteIntoField(inputId) {
+                const el = document.getElementById(inputId);
+                el.focus();
+                try {
+                  if (navigator.clipboard && navigator.clipboard.readText) {
+                    const text = await navigator.clipboard.readText();
+                    if (text) {
+                      el.value = text.trim();
+                      return;
+                    }
+                  }
+                } catch (e) {}
+                const manual = prompt("Paste your key here:");
+                if (manual !== null && manual.trim() !== "") {
+                  el.value = manual.trim();
+                }
+              }
+
+              async function copyTextSafe(text, msg) {
+                try {
+                  await navigator.clipboard.writeText(text);
+                  alert(msg || "Copied to clipboard!");
+                } catch (e) {
+                  prompt("Copy this text:", text);
+                }
+              }
+
+              async function handleSuperuserLogin() {
+                const pwd = document.getElementById('suPasswordInput').value;
+                if (!pwd) {
+                  alert("Please enter the Superuser Password.");
+                  return;
+                }
+                const btn = document.getElementById('btnLoginSu');
+                btn.disabled = true;
+                btn.textContent = "Verifying...";
+                try {
+                  const kdf = await deriveZkKdf(pwd);
+                  const check = await sha256Bytes(concatBytes(kdf, new TextEncoder().encode("VLOCK_SU_AUTH_v2")));
+                  if (bytesToHex(check).toLowerCase() === ZK_VERIFIER_HEX.toLowerCase()) {
+                    verifiedSuPassword = pwd;
+                    document.getElementById('suLoginBox').style.display = 'none';
+                    document.getElementById('suGeneratorBox').style.display = 'flex';
+                  } else {
+                    alert("Incorrect Superuser Password!");
+                  }
+                } catch (err) {
+                  alert("Login error: " + err.message);
+                } finally {
+                  btn.disabled = false;
+                  btn.textContent = "Login";
+                }
+              }
+
+              async function handleGenerateSessionKey() {
+                try {
+                  const code = document.getElementById('suDurationSelect').value;
+                  const salt = hexToBytes(ZK_SALT_HEX);
+                  const kdf = await deriveZkKdf(verifiedSuPassword);
+                  const encD = hexToBytes(ZK_ENC_D_HEX);
+
+                  const aesKey = await crypto.subtle.importKey('raw', kdf, 'AES-CTR', false, ['decrypt']);
+                  const iv = new Uint8Array(16);
+                  iv.set(salt.slice(0, 8), 0);
+                  const dRaw = await crypto.subtle.decrypt({ name: 'AES-CTR', counter: iv, length: 64 }, aesKey, encD);
+                  const dB64u = bytesToBase64Url(dRaw);
+
+                  const jwkPriv = {
+                    kty: "EC",
+                    crv: "P-256",
+                    x: ZK_PUB_X_B64U,
+                    y: ZK_PUB_Y_B64U,
+                    d: dB64u,
+                    ext: true
+                  };
+
+                  const ecPrivKey = await crypto.subtle.importKey(
+                    'jwk',
+                    jwkPriv,
+                    { name: 'ECDSA', namedCurve: 'P-256' },
+                    false,
+                    ['sign']
+                  );
+
+                  const rnd = crypto.getRandomValues(new Uint8Array(4));
+                  const nonce = bytesToHex(rnd).toUpperCase();
+                  const msg = `VLKS-${code}-${nonce}`;
+                  const rawSig = new Uint8Array(await crypto.subtle.sign(
+                    { name: 'ECDSA', hash: 'SHA-256' },
+                    ecPrivKey,
+                    new TextEncoder().encode(msg)
+                  ));
+
+                  const fullKey = `${msg}-${base32Encode(rawSig)}`;
+                  document.getElementById('suGeneratedKeyOut').value = fullKey;
+                  copyTextSafe(fullKey, "Session Key generated and copied to clipboard!");
+                } catch (err) {
+                  alert("Error generating Session Key: " + err.message);
+                }
+              }
+
+              async function handleActivateSessionKey() {
+                try {
+                  const raw = document.getElementById('sessionKeyInput').value.trim().toUpperCase();
+                  if (!raw) {
+                    alert("Please paste a Session Key first.");
+                    return;
+                  }
+                  const parts = raw.split('-');
+                  if (parts.length !== 4 || parts[0] !== 'VLKS') {
+                    throw new Error("Invalid Session Key format. Expected VLKS-XXXX-XXXXXXXX-...");
+                  }
+                  const [_, code, nonce, sigB32] = parts;
+                  if (!(code in CODE_TO_SECONDS)) {
+                    throw new Error("Unknown duration code in Session Key.");
+                  }
+
+                  const rawSig = base32Decode(sigB32);
+                  const jwkPub = {
+                    kty: "EC",
+                    crv: "P-256",
+                    x: ZK_PUB_X_B64U,
+                    y: ZK_PUB_Y_B64U,
+                    ext: true
+                  };
+
+                  const pubKey = await crypto.subtle.importKey(
+                    'jwk',
+                    jwkPub,
+                    { name: 'ECDSA', namedCurve: 'P-256' },
+                    false,
+                    ['verify']
+                  );
+
+                  const valid = await crypto.subtle.verify(
+                    { name: 'ECDSA', hash: 'SHA-256' },
+                    pubKey,
+                    rawSig,
+                    new TextEncoder().encode(`VLKS-${code}-${nonce}`)
+                  );
+                  if (!valid) {
+                    throw new Error("Invalid or forged Session Key signature.");
+                  }
+
+                  const usedNonces = JSON.parse(localStorage.getItem('vlock_used_nonces') || '[]');
+                  if (usedNonces.includes(nonce)) {
+                    throw new Error("This Session Key has already been used on this device.");
+                  }
+                  usedNonces.push(nonce);
+                  localStorage.setItem('vlock_used_nonces', JSON.stringify(usedNonces));
+
+                  const secs = CODE_TO_SECONDS[code];
+                  const expiry = secs === -1 ? -1 : Math.floor(Date.now() / 1000) + secs;
+                  localStorage.setItem('vlock_admin_expiry', String(expiry));
+                  localStorage.setItem('vlock_admin_plan', CODE_TO_LABEL[code]);
+
+                  document.getElementById('sessionKeyInput').value = '';
+                  refreshAdminLockUI();
+                  alert("Admin Encryption Panel unlocked for: " + CODE
