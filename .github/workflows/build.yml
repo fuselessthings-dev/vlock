@@ -211,14 +211,15 @@ jobs:
                 padding: 7px 10px; text-align: center;
               }
 
-              /* PURE BROWSER NATIVE PLAYER WITHOUT DOWNLOAD BUTTON */
+              /* PURE BROWSER NATIVE PLAYER: 16:9 ASPECT RATIO SO CONTROLS & PLAYBACK SPEED NEVER OVERLAP */
               .player-wrap {
                 display: none; width: 100%; background: #000000; border-radius: 8px;
-                overflow: hidden; margin-top: 4px;
+                margin-top: 6px; border: 1px solid var(--green-border);
               }
               .player-wrap.active { display: block; }
               #vlockVideoPlayer {
-                display: block; width: 100%; max-height: 75vh; background: #000000; outline: none;
+                display: block; width: 100%; aspect-ratio: 16 / 9; min-height: 280px; max-height: 78vh;
+                background: #000000; border-radius: 8px; outline: none;
               }
               video::-internal-media-controls-download-button { display: none !important; }
 
@@ -341,7 +342,7 @@ jobs:
                     <path d="M26 19 V29 M21 24 H31" stroke="#ffffff" stroke-width="2.5" stroke-linecap="round"/>
                   </svg>
                   <div class="nle-text">
-                    <h3 id="viewerFileTitle">Tap or Drag & Drop Encrypted Video (.html / .vlock) Here</h3>
+                    <h3 id="viewerFileTitle">Tap or Drag & Drop Encrypted Video (.html / .htm / .vlock) Here</h3>
                     <p>Plays natively on all devices • Instant local playback (0 MB internet upload)</p>
                   </div>
                 </div>
@@ -355,7 +356,7 @@ jobs:
                   ▶ Decrypt & Watch / Unlock
                 </button>
 
-                <!-- PURE BROWSER NATIVE PLAYER WITHOUT DOWNLOAD BUTTON -->
+                <!-- PURE BROWSER NATIVE PLAYER (WITH FULLSCREEN, NO DOWNLOAD BUTTON, NO OVERLAPPING CONTROLS) -->
                 <div class="player-wrap" id="playerWrap">
                   <video
                     id="vlockVideoPlayer"
@@ -402,7 +403,7 @@ jobs:
                     </svg>
                     <div class="nle-text">
                       <h3 id="encryptFileTitle">1. Tap or Drag & Drop Video or Audio File Here</h3>
-                      <p>Encrypts into a clickable .html video file (Redirects to VLock automatically when clicked)</p>
+                      <p>Encrypts into a clickable .html file (Redirects to VLock & asks for key automatically)</p>
                     </div>
                   </div>
 
@@ -480,7 +481,7 @@ jobs:
                       </svg>
                     </div>
                     <h4>1. Download & Click the File</h4>
-                    <p>Download the encrypted <b>.html</b> video file from Telegram and click it—it automatically opens this VLock website!</p>
+                    <p>Download the encrypted <b>.html</b> video file from Telegram and click it—it automatically opens VLock and asks for your key!</p>
                   </div>
 
                   <div class="step-card">
@@ -495,7 +496,7 @@ jobs:
                       </svg>
                     </div>
                     <h4>2. Add File to Green Panel</h4>
-                    <p>Tap the dashed box in the green <b>USER PANEL • Decryption Panel</b> and select the downloaded <b>.html</b> video file.</p>
+                    <p>Tap the dashed box in the green <b>USER PANEL • Decryption Panel</b> and select the downloaded encrypted file.</p>
                   </div>
 
                   <div class="step-card">
@@ -512,7 +513,7 @@ jobs:
                       </svg>
                     </div>
                     <h4>3. Paste Key & Watch</h4>
-                    <p>Click <b>Paste Key</b> to paste your key from the Bot, then tap <b>Decrypt & Watch</b>. The video plays natively right inside the browser player!</p>
+                    <p>Click <b>Paste Key</b> in the popup window, then tap <b>Decrypt & Watch</b>. The video plays natively with full-screen support!</p>
                   </div>
                 </div>
 
@@ -622,6 +623,24 @@ jobs:
               For any issue contact <a href="https://t.me/Modrat_editor" target="_blank" rel="noopener">@Modrat_editor</a> using Telegram.
             </div>
 
+            <!-- AUTOMATIC DECRYPTION KEY POPUP MODAL -->
+            <div class="modal-backdrop" id="instantKeyModal">
+              <div class="modal" style="border:2px solid #2ea043;background:#0b2419;">
+                <div style="display:flex;justify-content:space-between;align-items:center;">
+                  <h2 style="color:#3fb950;">🔑 Enter Decryption Key</h2>
+                  <button type="button" class="btn btn-dark" id="btnCloseInstantKeyModal" style="padding:4px 10px;font-size:11px;">✕</button>
+                </div>
+                <p id="instantKeyModalFileLabel" style="color:#ffffff;font-weight:700;font-size:13px;">Paste your key below to unlock and play immediately:</p>
+                <div class="input-row">
+                  <input type="text" id="modalViewerKeyInput" class="input-box" placeholder="Paste Key Here (VLOCK-...)" />
+                  <button type="button" class="btn btn-dark" id="btnModalPasteKey" style="background:#1b4332;border-color:#2ea043;color:#fff">Paste Key</button>
+                </div>
+                <button type="button" class="btn btn-green" id="btnModalDecryptWatch" style="padding:12px;font-size:14px;">
+                  ▶ Decrypt & Watch Now
+                </button>
+              </div>
+            </div>
+
             <!-- SUPERUSER MODAL -->
             <div class="modal-backdrop" id="superuserModal">
               <div class="modal">
@@ -691,6 +710,7 @@ jobs:
               let verifiedSuPassword = "";
               let currentObjectUrl = null;
               let autoPlayPendingAfterPick = false;
+              let ffmpegInstance = null;
 
               // Immediately remove any old Service Workers so virtual stream bugs never occur
               if ('serviceWorker' in navigator) {
@@ -782,21 +802,27 @@ jobs:
               // INDEXEDDB CACHE FOR REDIRECTED .HTML FILES
               // =========================================================================
               function saveVideoToIndexedDb(filename, blob) {
-                try {
-                  const req = indexedDB.open('vlock_instant_db', 1);
-                  req.onupgradeneeded = (e) => {
-                    const db = e.target.result;
-                    if (!db.objectStoreNames.contains('media')) db.createObjectStore('media');
-                  };
-                  req.onsuccess = (e) => {
-                    const db = e.target.result;
-                    const tx = db.transaction('media', 'readwrite');
-                    const store = tx.objectStore('media');
-                    store.put({ name: filename, blob: blob }, 'latest');
-                    if (filename) store.put({ name: filename, blob: blob }, filename);
-                    tx.oncomplete = () => db.close();
-                  };
-                } catch (e) {}
+                return new Promise((resolve) => {
+                  try {
+                    const req = indexedDB.open('vlock_instant_db', 1);
+                    req.onupgradeneeded = (e) => {
+                      const db = e.target.result;
+                      if (!db.objectStoreNames.contains('media')) db.createObjectStore('media');
+                    };
+                    req.onsuccess = (e) => {
+                      try {
+                        const db = e.target.result;
+                        const tx = db.transaction('media', 'readwrite');
+                        const store = tx.objectStore('media');
+                        store.put({ name: filename, blob: blob }, 'latest');
+                        if (filename) store.put({ name: filename, blob: blob }, filename);
+                        tx.oncomplete = () => { db.close(); resolve(); };
+                        tx.onerror = () => { db.close(); resolve(); };
+                      } catch (err) { resolve(); }
+                    };
+                    req.onerror = () => resolve();
+                  } catch (e) { resolve(); }
+                });
               }
 
               function getVideoFromIndexedDb(filename) {
@@ -820,6 +846,17 @@ jobs:
                           b.name = g.result.name || filename || 'Video.html';
                           db.close();
                           resolve(b);
+                        } else if (key !== 'latest') {
+                          const g2 = store.get('latest');
+                          g2.onsuccess = () => {
+                            db.close();
+                            if (g2.result && g2.result.blob) {
+                              const b = g2.result.blob;
+                              b.name = g2.result.name || 'Video.html';
+                              resolve(b);
+                            } else resolve(null);
+                          };
+                          g2.onerror = () => { db.close(); resolve(null); };
                         } else {
                           db.close();
                           resolve(null);
@@ -832,11 +869,35 @@ jobs:
                 });
               }
 
+              function onVlockFilePicked(file, showPopup = true) {
+                if (!file) return;
+                selectedVlockFile = file;
+                saveVideoToIndexedDb(file.name, file);
+                const sizeMb = (file.size / (1024 * 1024)).toFixed(1);
+                document.getElementById('viewerFileTitle').textContent = `Ready to Unlock: ${file.name} (${sizeMb} MB)`;
+
+                const currentKey = document.getElementById('viewerKeyInput').value.trim();
+                if (autoPlayPendingAfterPick && currentKey) {
+                  autoPlayPendingAfterPick = false;
+                  handleDecryptAndWatch();
+                  return;
+                }
+
+                if (showPopup) {
+                  document.getElementById('instantKeyModalFileLabel').textContent = `🎬 Ready to Play: ${file.name} (${sizeMb} MB)`;
+                  document.getElementById('instantKeyModal').classList.add('show');
+                  setTimeout(() => {
+                    const modalInput = document.getElementById('modalViewerKeyInput');
+                    if (modalInput) modalInput.focus();
+                  }, 60);
+                }
+              }
+
               async function checkRedirectedVideoLaunch() {
                 const params = new URLSearchParams(window.location.search);
-                if (!params.has('play')) return;
+                if (!params.has('play') && !params.has('auto_unlock')) return;
 
-                const targetName = params.get('play') || '';
+                const targetName = params.get('play') || params.get('file') || '';
                 window.history.replaceState({}, document.title, window.location.pathname);
 
                 const cached = await getVideoFromIndexedDb(targetName);
@@ -844,23 +905,18 @@ jobs:
                   selectedVlockFile = cached;
                   const sizeMb = (cached.size / (1024 * 1024)).toFixed(1);
                   document.getElementById('viewerFileTitle').textContent = `Ready to Unlock: ${cached.name} (${sizeMb} MB)`;
-                } else if (targetName) {
-                  document.getElementById('viewerFileTitle').textContent = `🎬 Tap Here to Select "${targetName}" & Paste Key Below`;
+                  document.getElementById('instantKeyModalFileLabel').textContent = `🎬 Ready to Play: ${cached.name} (${sizeMb} MB)`;
+                } else {
+                  document.getElementById('instantKeyModalFileLabel').textContent = targetName
+                    ? `🎬 Opening "${targetName}" — Paste your key & tap Decrypt & Watch:`
+                    : `🎬 Paste your Decryption Key below to unlock & play your video:`;
                 }
-                document.getElementById('viewerKeyInput').focus();
-              }
 
-              function onVlockFilePicked(file) {
-                if (!file) return;
-                selectedVlockFile = file;
-                saveVideoToIndexedDb(file.name, file);
-                const sizeMb = (file.size / (1024 * 1024)).toFixed(1);
-                document.getElementById('viewerFileTitle').textContent = `Ready to Unlock: ${file.name} (${sizeMb} MB)`;
-
-                if (autoPlayPendingAfterPick && document.getElementById('viewerKeyInput').value.trim()) {
-                  autoPlayPendingAfterPick = false;
-                  handleDecryptAndWatch();
-                }
+                document.getElementById('instantKeyModal').classList.add('show');
+                setTimeout(() => {
+                  const modalInput = document.getElementById('modalViewerKeyInput');
+                  if (modalInput) modalInput.focus();
+                }, 60);
               }
 
               function onRawMediaPicked(file) {
@@ -1084,32 +1140,213 @@ jobs:
                 }
               }
 
-              // Universal native playback MIME resolution across Android, iOS, Windows & macOS
-              function detectUniversalPlaybackMime(ext, firstBytes) {
-                if (firstBytes && firstBytes.length >= 12) {
+              // =========================================================================
+              // CONTAINER & CODEC ENGINE (GUARANTEES videoWidth > 0 & NO BLACK SCREEN)
+              // =========================================================================
+              function isAudioOnlyExt(ext) {
+                const e = (ext || '').toLowerCase();
+                return ['.mp3', '.wav', '.ogg', '.flac', '.aac', '.m4a'].includes(e);
+              }
+
+              function getCandidateMimes(ext, firstBytes) {
+                const e = (ext || '').toLowerCase();
+                if (isAudioOnlyExt(e)) {
+                  const audioMap = {
+                    '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.ogg': 'audio/ogg',
+                    '.flac': 'audio/flac', '.aac': 'audio/aac', '.m4a': 'audio/mp4'
+                  };
+                  return [audioMap[e] || 'audio/mp4', ''];
+                }
+                if (firstBytes && firstBytes.length >= 32) {
+                  // EBML magic bytes (0x1A 0x45 0xDF 0xA3)
                   if (firstBytes[0] === 0x1A && firstBytes[1] === 0x45 && firstBytes[2] === 0xDF && firstBytes[3] === 0xA3) {
-                    return 'video/webm';
-                  }
-                  if (firstBytes[0] === 0x4F && firstBytes[1] === 0x67 && firstBytes[2] === 0x67 && firstBytes[3] === 0x53) {
-                    return 'video/ogg';
-                  }
-                  if ((firstBytes[0] === 0x49 && firstBytes[1] === 0x44 && firstBytes[2] === 0x33) ||
-                      (firstBytes[0] === 0xFF && (firstBytes[1] & 0xE0) === 0xE0)) {
-                    return 'audio/mpeg';
+                    const headerAscii = new TextDecoder('ascii', { fatal: false }).decode(firstBytes.slice(0, 48)).toLowerCase();
+                    if (headerAscii.includes('webm')) {
+                      return ['video/webm', ''];
+                    }
+                    // Matroska (.mkv): NEVER use video/webm first because Chromium blocks H.264/HEVC in strict WebM mode!
+                    // Passing '' lets Chromium's FFmpegDemuxer sniff Matroska and decode H.264/HEVC natively.
+                    return ['', 'video/x-matroska', 'video/mp4'];
                   }
                 }
-                const e = (ext || '').toLowerCase();
-                const audioMap = {
-                  '.mp3': 'audio/mpeg',
-                  '.wav': 'audio/wav',
-                  '.ogg': 'audio/ogg',
-                  '.flac': 'audio/flac',
-                  '.aac': 'audio/aac',
-                  '.m4a': 'audio/mp4'
-                };
-                if (audioMap[e]) return audioMap[e];
-                if (e === '.webm') return 'video/webm';
-                return 'video/mp4';
+                if (e === '.mkv') return ['', 'video/x-matroska', 'video/mp4'];
+                if (e === '.webm') return ['video/webm', ''];
+                return ['video/mp4', ''];
+              }
+
+              // Patch 'hev1' box tag to 'hvc1' in MP4/MOV headers so hardware HEVC decoders don't show a black screen
+              function patchHev1ToHvc1InChunks(chunks) {
+                let patchedAny = false;
+                const out = chunks.map((buf, idx) => {
+                  // Only scan first and last chunk where moov/stsd atom resides
+                  if (idx !== 0 && idx !== chunks.length - 1) return buf;
+                  const bytes = new Uint8Array(buf);
+                  let copy = null;
+                  for (let i = 4; i < bytes.length - 8; i++) {
+                    if (
+                      bytes[i] === 0x68 && bytes[i + 1] === 0x65 &&
+                      bytes[i + 2] === 0x76 && bytes[i + 3] === 0x31
+                    ) {
+                      if (!copy) copy = new Uint8Array(bytes);
+                      copy[i] = 0x68; copy[i + 1] = 0x76; copy[i + 2] = 0x63; copy[i + 3] = 0x31; // 'hvc1'
+                      patchedAny = true;
+                    }
+                  }
+                  return copy ? copy.buffer : buf;
+                });
+                return { patchedAny, chunks: out };
+              }
+
+              // Loads a Blob into <video> and verifies that actual video frames decode (videoWidth > 0)
+              function tryLoadPlayableVideo(videoEl, blob, expectVideoTrack, timeoutMs = 3500) {
+                return new Promise((resolve) => {
+                  if (currentObjectUrl) {
+                    URL.revokeObjectURL(currentObjectUrl);
+                    currentObjectUrl = null;
+                  }
+                  const url = URL.createObjectURL(blob);
+                  currentObjectUrl = url;
+                  let done = false;
+
+                  const finish = (ok) => {
+                    if (done) return;
+                    done = true;
+                    clearTimeout(timer);
+                    videoEl.onloadedmetadata = null;
+                    videoEl.onloadeddata = null;
+                    videoEl.onerror = null;
+                    resolve(ok);
+                  };
+
+                  const checkDims = () => {
+                    if (!expectVideoTrack) {
+                      finish(true);
+                      return;
+                    }
+                    if (videoEl.videoWidth > 0 && videoEl.videoHeight > 0) {
+                      finish(true);
+                    }
+                  };
+
+                  const timer = setTimeout(() => {
+                    if (!expectVideoTrack) finish(true);
+                    else finish(videoEl.videoWidth > 0 && videoEl.videoHeight > 0);
+                  }, timeoutMs);
+
+                  videoEl.onerror = () => finish(false);
+                  videoEl.onloadedmetadata = () => {
+                    if (!expectVideoTrack || (videoEl.videoWidth > 0 && videoEl.videoHeight > 0)) {
+                      finish(true);
+                    } else {
+                      setTimeout(() => {
+                        finish(videoEl.videoWidth > 0 && videoEl.videoHeight > 0);
+                      }, 300);
+                    }
+                  };
+                  videoEl.onloadeddata = checkDims;
+
+                  videoEl.src = url;
+                  videoEl.load();
+                });
+              }
+
+              function loadScriptOnce(src) {
+                return new Promise((resolve, reject) => {
+                  if (document.querySelector(`script[src="${src}"]`)) {
+                    resolve();
+                    return;
+                  }
+                  const s = document.createElement('script');
+                  s.src = src;
+                  s.onload = () => resolve();
+                  s.onerror = () => reject(new Error('Failed to load compatibility engine'));
+                  document.head.appendChild(s);
+                });
+              }
+
+              // Fallback FFmpeg WebAssembly engine if a device cannot natively decode MKV / 10-bit / HEVC
+              async function remuxOrTranscodeForAllDevices(blobParts, ext, statusCallback) {
+                statusCallback("Loading Universal Video Compatibility Engine...");
+                await loadScriptOnce("https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js");
+
+                if (!ffmpegInstance) {
+                  const { FFmpeg } = window.FFmpegWASM;
+                  ffmpegInstance = new FFmpeg();
+                  ffmpegInstance.on('progress', ({ progress }) => {
+                    const pct = Math.min(99, Math.max(1, Math.round((progress || 0) * 100)));
+                    statusCallback(`Converting video for native playback... ${pct}%`);
+                  });
+                  await ffmpegInstance.load({
+                    coreURL: "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.js",
+                    wasmURL: "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.wasm"
+                  });
+                }
+
+                const inName = "input" + (ext || ".mkv");
+                const remuxName = "remux.mp4";
+                const transcodeName = "universal.mp4";
+
+                const fullUint8 = new Uint8Array(await new Blob(blobParts).arrayBuffer());
+                await ffmpegInstance.writeFile(inName, fullUint8);
+
+                // Step 1: Fast lossless stream remux to MP4 (fixes MKV/AVI/TS/MOV containers in ~1-2 seconds)
+                statusCallback("Remuxing container to native MP4...");
+                const ret1 = await ffmpegInstance.exec([
+                  "-i", inName,
+                  "-map", "0:v:0",
+                  "-map", "0:a:0?",
+                  "-c:v", "copy",
+                  "-c:a", "aac",
+                  "-b:a", "128k",
+                  "-movflags", "+faststart",
+                  "-tag:v", "hvc1",
+                  remuxName
+                ]);
+
+                if (ret1 === 0) {
+                  try {
+                    const data1 = await ffmpegInstance.readFile(remuxName);
+                    await ffmpegInstance.deleteFile(remuxName).catch(() => {});
+                    if (data1 && data1.byteLength > 1024) {
+                      const remuxBlob = new Blob([data1.buffer], { type: 'video/mp4' });
+                      const videoEl = document.getElementById('vlockVideoPlayer');
+                      const ok = await tryLoadPlayableVideo(videoEl, remuxBlob, true, 3500);
+                      if (ok) {
+                        await ffmpegInstance.deleteFile(inName).catch(() => {});
+                        return true;
+                      }
+                    }
+                  } catch (e) {}
+                }
+
+                // Step 2: Full H.264 8-bit yuv420p transcode (fixes 10-bit Hi10P or unsupported HEVC codecs)
+                statusCallback("Converting codec to universal H.264 MP4...");
+                const ret2 = await ffmpegInstance.exec([
+                  "-i", inName,
+                  "-map", "0:v:0",
+                  "-map", "0:a:0?",
+                  "-c:v", "libx264",
+                  "-preset", "ultrafast",
+                  "-crf", "23",
+                  "-pix_fmt", "yuv420p",
+                  "-c:a", "aac",
+                  "-b:a", "128k",
+                  "-movflags", "+faststart",
+                  transcodeName
+                ]);
+
+                await ffmpegInstance.deleteFile(inName).catch(() => {});
+
+                if (ret2 === 0) {
+                  const data2 = await ffmpegInstance.readFile(transcodeName);
+                  await ffmpegInstance.deleteFile(transcodeName).catch(() => {});
+                  if (data2 && data2.byteLength > 1024) {
+                    const universalBlob = new Blob([data2.buffer], { type: 'video/mp4' });
+                    const videoEl = document.getElementById('vlockVideoPlayer');
+                    return await tryLoadPlayableVideo(videoEl, universalBlob, true, 4000);
+                  }
+                }
+                return false;
               }
 
               async function handleDecryptAndWatch() {
@@ -1126,8 +1363,17 @@ jobs:
                 }
 
                 const btn = document.getElementById('btnDecryptWatch');
-                btn.disabled = true;
-                btn.textContent = "Decrypting Video...";
+                const modalBtn = document.getElementById('btnModalDecryptWatch');
+                const setBtnsText = (txt, disabled) => {
+                  btn.disabled = disabled;
+                  btn.textContent = txt;
+                  if (modalBtn) {
+                    modalBtn.disabled = disabled;
+                    modalBtn.textContent = txt;
+                  }
+                };
+
+                setBtnsText("Verifying Key & Decrypting...", true);
 
                 try {
                   const enc = new TextEncoder();
@@ -1135,8 +1381,18 @@ jobs:
                   const targetKeyId = (await sha256Bytes(kBytes)).slice(0, 15);
                   const wrapMask = await sha256Bytes(concatBytes(kBytes, enc.encode("VLOCK_WRAP")));
 
-                  const probeLen = Math.min(selectedVlockFile.size, 65536);
-                  const probeBytes = new Uint8Array(await selectedVlockFile.slice(0, probeLen).arrayBuffer());
+                  const probeLen = Math.min(selectedVlockFile.size, 1024 * 1024);
+                  let probeBytes;
+                  try {
+                    probeBytes = new Uint8Array(await selectedVlockFile.slice(0, probeLen).arrayBuffer());
+                  } catch (readErr) {
+                    // If cached IndexedDB File handle expired, prompt user to re-select
+                    selectedVlockFile = null;
+                    autoPlayPendingAfterPick = true;
+                    document.getElementById('vlockFileInput').click();
+                    return;
+                  }
+
                   let vlockStart = -1;
                   for (let i = 0; i <= probeBytes.length - 6; i++) {
                     const ver = (probeBytes[i + 4] << 8) | probeBytes[i + 5];
@@ -1218,7 +1474,7 @@ jobs:
 
                   const cryptoKey = await crypto.subtle.importKey('raw', masterKey, 'AES-CTR', false, ['decrypt']);
 
-                  // Decrypt in fast 16 MB local memory chunks into a native browser Blob
+                  // Decrypt in fast 16 MB local memory chunks
                   const blobParts = [];
                   const chunkSize = 16 * 1024 * 1024;
                   let offset = 0;
@@ -1233,56 +1489,67 @@ jobs:
                       encChunk
                     );
                     if (!firstChunkBytes) {
-                      firstChunkBytes = new Uint8Array(decChunk.slice(0, 32));
+                      firstChunkBytes = new Uint8Array(decChunk.slice(0, 64));
                     }
                     blobParts.push(decChunk);
                     offset += len;
                     const pct = Math.min(100, Math.round((offset / payloadSize) * 100));
-                    btn.textContent = `Preparing Native Player... ${pct}%`;
+                    setBtnsText(`Decrypting Video... ${pct}%`, true);
                   }
 
                   if (slotStatus === 2) {
+                    document.getElementById('instantKeyModal').classList.remove('show');
                     const outName = `${selectedVlockFile.name.replace(/\.(html|htm|vlock)$/i, '')}_Unlocked${ext}`;
-                    const restoreMime = detectUniversalPlaybackMime(ext, firstChunkBytes);
-                    await saveBlobToDisk(new Blob(blobParts, { type: restoreMime }), outName);
+                    await saveBlobToDisk(new Blob(blobParts, { type: 'application/octet-stream' }), outName);
                     alert("Permanent Masterkey Verified!\n\nVideo unlocked forever and restored to its original format: " + outName);
                     return;
                   }
 
+                  const videoEl = document.getElementById('vlockVideoPlayer');
+                  videoEl.pause();
+                  document.getElementById('playerWrap').classList.add('active');
+
+                  const expectVideo = !isAudioOnlyExt(ext);
+                  const candidateMimes = getCandidateMimes(ext, firstChunkBytes);
+                  let playable = false;
+
+                  // Stage 1: Try candidate MIME types & verify videoWidth > 0 (not just audio with black screen)
+                  for (const mime of candidateMimes) {
+                    const testBlob = mime ? new Blob(blobParts, { type: mime }) : new Blob(blobParts);
+                    playable = await tryLoadPlayableVideo(videoEl, testBlob, expectVideo, 3000);
+                    if (playable) break;
+                  }
+
+                  // Stage 2: If HEVC MP4 has 'hev1' tag, patch to 'hvc1' and test
+                  if (!playable && expectVideo) {
+                    const patched = patchHev1ToHvc1InChunks(blobParts);
+                    if (patched.patchedAny) {
+                      playable = await tryLoadPlayableVideo(
+                        videoEl,
+                        new Blob(patched.chunks, { type: 'video/mp4' }),
+                        true,
+                        3000
+                      );
+                    }
+                  }
+
+                  // Stage 3: Universal FFmpeg.wasm remux/transcode fallback if device still has videoWidth === 0
+                  if (!playable && expectVideo) {
+                    playable = await remuxOrTranscodeForAllDevices(blobParts, ext, (msg) => setBtnsText(msg, true));
+                  }
+
+                  // Burn temporary key after stream is loaded
                   burnedKeys[keyHex] = Date.now();
                   localStorage.setItem('vlock_burned_keys', JSON.stringify(burnedKeys));
 
-                  const videoEl = document.getElementById('vlockVideoPlayer');
-                  videoEl.pause();
-                  if (currentObjectUrl) {
-                    URL.revokeObjectURL(currentObjectUrl);
-                    currentObjectUrl = null;
-                  }
-
-                  const primaryMime = detectUniversalPlaybackMime(ext, firstChunkBytes);
-                  currentObjectUrl = URL.createObjectURL(new Blob(blobParts, { type: primaryMime }));
-
-                  document.getElementById('playerWrap').classList.add('active');
-
-                  // Automatic MIME fallback if container is MKV disguised as WebM or vice versa
-                  videoEl.onerror = () => {
-                    videoEl.onerror = null;
-                    const fallbackMime = primaryMime === 'video/webm' ? 'video/mp4' : 'video/webm';
-                    if (currentObjectUrl) URL.revokeObjectURL(currentObjectUrl);
-                    currentObjectUrl = URL.createObjectURL(new Blob(blobParts, { type: fallbackMime }));
-                    videoEl.src = currentObjectUrl;
-                    videoEl.load();
-                    videoEl.play().catch(() => {});
-                  };
-
-                  videoEl.src = currentObjectUrl;
-                  videoEl.load();
+                  document.getElementById('instantKeyModal').classList.remove('show');
+                  videoEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
                   await videoEl.play().catch(() => {});
                 } catch (err) {
                   alert(err.message);
                 } finally {
-                  btn.disabled = false;
-                  btn.textContent = "▶ Decrypt & Watch / Unlock";
+                  setBtnsText("▶ Decrypt & Watch / Unlock", false);
+                  if (modalBtn) modalBtn.textContent = "▶ Decrypt & Watch Now";
                 }
               }
 
@@ -1452,7 +1719,7 @@ jobs:
                   }
 
                   const finalBlob = new Blob(blobParts, { type: 'application/octet-stream' });
-                  saveVideoToIndexedDb(outFileName, finalBlob);
+                  await saveVideoToIndexedDb(outFileName, finalBlob);
                   await saveBlobToDisk(finalBlob, outFileName);
                   statusEl.textContent = `Done! Saved ${outFileName} & bot_keys.txt to your device.`;
                 } catch (err) {
@@ -1497,8 +1764,29 @@ jobs:
                 refreshAdminLockUI();
                 checkRedirectedVideoLaunch();
 
-                bindDropZone('viewerDropZone', 'vlockFileInput', onVlockFilePicked);
+                bindDropZone('viewerDropZone', 'vlockFileInput', (f) => onVlockFilePicked(f, true));
                 bindDropZone('encryptDropZone', 'rawMediaInput', onRawMediaPicked);
+
+                document.getElementById('btnCloseInstantKeyModal').addEventListener('click', () => {
+                  document.getElementById('instantKeyModal').classList.remove('show');
+                });
+                document.getElementById('btnModalPasteKey').addEventListener('click', async () => {
+                  await pasteIntoField('modalViewerKeyInput');
+                  document.getElementById('viewerKeyInput').value = document.getElementById('modalViewerKeyInput').value;
+                });
+                document.getElementById('modalViewerKeyInput').addEventListener('input', (e) => {
+                  document.getElementById('viewerKeyInput').value = e.target.value;
+                });
+                document.getElementById('modalViewerKeyInput').addEventListener('keydown', (e) => {
+                  if (e.key === 'Enter') {
+                    document.getElementById('viewerKeyInput').value = e.target.value;
+                    handleDecryptAndWatch();
+                  }
+                });
+                document.getElementById('btnModalDecryptWatch').addEventListener('click', () => {
+                  document.getElementById('viewerKeyInput').value = document.getElementById('modalViewerKeyInput').value;
+                  handleDecryptAndWatch();
+                });
 
                 document.getElementById('tabBtnUser').addEventListener('click', () => switchTutorialTab('user'));
                 document.getElementById('tabBtnAdmin').addEventListener('click', () => switchTutorialTab('admin'));
@@ -1536,7 +1824,7 @@ jobs:
                 document.getElementById('menuCopyright').addEventListener('click', () => {
                   document.getElementById('infoModalTitle').textContent = "Copyright & Legal Notice";
                   document.getElementById('infoModalBody').textContent =
-                    "VLock Media Security Suite v2.6\n© 2026 VLock Studio. All Rights Reserved.\n\n" +
+                    "VLock Media Security Suite v2.7\n© 2026 VLock Studio. All Rights Reserved.\n\n" +
                     "This software and its cryptographic stream architecture are protected by copyright law and international treaties. " +
                     "Unauthorized reproduction, reverse engineering, or tampering may result in severe civil and criminal penalties.\n\n" +
                     "For any issue contact @Modrat_editor using Telegram.";
