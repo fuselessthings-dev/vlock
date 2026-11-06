@@ -333,7 +333,7 @@ jobs:
                   <small>FREE FOREVER • ZERO DATA UPLOAD</small>
                 </div>
 
-                <input type="file" id="vlockFileInput" accept=".vlock,.htm,.html,*/*" style="display:none" />
+                <input type="file" id="vlockFileInput" accept=".html,.htm,.vlock,*/*" style="display:none" />
                 <div class="nle-dropzone" id="viewerDropZone">
                   <svg class="nle-icon" viewBox="0 0 52 48" fill="none">
                     <path d="M6 14 V6 H14 M38 6 H46 V14 M6 34 V42 H14 M38 42 H46 V34" stroke="#3fb950" stroke-width="2.5" stroke-linecap="round"/>
@@ -341,7 +341,7 @@ jobs:
                     <path d="M26 19 V29 M21 24 H31" stroke="#ffffff" stroke-width="2.5" stroke-linecap="round"/>
                   </svg>
                   <div class="nle-text">
-                    <h3 id="viewerFileTitle">Tap or Drag & Drop Encrypted Video (.vlock / .htm) Here</h3>
+                    <h3 id="viewerFileTitle">Tap or Drag & Drop Encrypted Video (.html / .vlock) Here</h3>
                     <p>Plays natively on all devices • Instant local playback (0 MB internet upload)</p>
                   </div>
                 </div>
@@ -402,7 +402,7 @@ jobs:
                     </svg>
                     <div class="nle-text">
                       <h3 id="encryptFileTitle">1. Tap or Drag & Drop Video or Audio File Here</h3>
-                      <p>Encrypts 100% locally on your device (0 MB internet upload • Supports 1 GB–50 GB+ files)</p>
+                      <p>Encrypts into a clickable .html video file (Redirects to VLock automatically when clicked)</p>
                     </div>
                   </div>
 
@@ -465,22 +465,22 @@ jobs:
                 <!-- TAB 1: USER PANEL GUIDE (FREE FOREVER) -->
                 <div class="tutorial-grid" id="tutGridUser">
                   <div class="step-card">
-                    <span class="step-badge badge-green">STEP 1 • DOWNLOAD</span>
+                    <span class="step-badge badge-green">STEP 1 • DOWNLOAD & CLICK</span>
                     <div class="step-visual">
                       <svg width="210" height="100" viewBox="0 0 210 100" fill="none">
                         <rect x="10" y="15" width="75" height="70" rx="10" fill="#1b2738" stroke="#388bfd" stroke-width="2"/>
                         <text x="47" y="45" fill="#58a6ff" font-size="11" font-weight="bold" text-anchor="middle">Telegram</text>
-                        <text x="47" y="62" fill="#8b949e" font-size="9" text-anchor="middle">Episode.vlock</text>
+                        <text x="47" y="62" fill="#8b949e" font-size="9" text-anchor="middle">Episode.html</text>
                         <path d="M95 50 H120 M114 44 L122 50 L114 56" stroke="#3fb950" stroke-width="2.5" stroke-linecap="round"/>
                         <rect x="130" y="15" width="70" height="70" rx="12" fill="#0b2419" stroke="#3fb950" stroke-width="2"/>
                         <rect x="151" y="42" width="28" height="24" rx="4" fill="#143d29" stroke="#3fb950" stroke-width="2"/>
                         <path d="M157 42 V35 A8 8 0 0 1 173 35 V42" stroke="#3fb950" stroke-width="2"/>
                         <polygon points="162,49 162,59 171,54" fill="#ffffff"/>
-                        <text x="165" y="78" fill="#3fb950" font-size="9" font-weight="bold" text-anchor="middle">Encrypted File</text>
+                        <text x="165" y="78" fill="#3fb950" font-size="9" font-weight="bold" text-anchor="middle">Redirects Here</text>
                       </svg>
                     </div>
-                    <h4>1. Download the Encrypted Video</h4>
-                    <p>Download the encrypted video file from our Telegram channel onto your phone or PC, and get your <b>One-Time Key</b> from the Telegram Bot.</p>
+                    <h4>1. Download & Click the File</h4>
+                    <p>Download the encrypted <b>.html</b> video file from Telegram and click it—it automatically opens this VLock website!</p>
                   </div>
 
                   <div class="step-card">
@@ -495,7 +495,7 @@ jobs:
                       </svg>
                     </div>
                     <h4>2. Add File to Green Panel</h4>
-                    <p>Tap the dashed box in the green <b>USER PANEL • Decryption Panel</b> and select your downloaded encrypted video file.</p>
+                    <p>Tap the dashed box in the green <b>USER PANEL • Decryption Panel</b> and select the downloaded <b>.html</b> video file.</p>
                   </div>
 
                   <div class="step-card">
@@ -512,7 +512,7 @@ jobs:
                       </svg>
                     </div>
                     <h4>3. Paste Key & Watch</h4>
-                    <p>Click <b>Paste Key</b> to paste your key from the Bot, then tap <b>Decrypt & Watch</b>. The video plays immediately inside the native browser player!</p>
+                    <p>Click <b>Paste Key</b> to paste your key from the Bot, then tap <b>Decrypt & Watch</b>. The video plays natively right inside the browser player!</p>
                   </div>
                 </div>
 
@@ -554,15 +554,15 @@ jobs:
                     <div class="step-visual">
                       <svg width="210" height="100" viewBox="0 0 210 100" fill="none">
                         <rect x="18" y="18" width="80" height="64" rx="8" fill="#140507" stroke="#f85149" stroke-width="2"/>
-                        <text x="58" y="46" fill="#ff7b72" font-size="10" font-weight="bold" text-anchor="middle">Video.vlock</text>
-                        <text x="58" y="62" fill="#8b949e" font-size="8" text-anchor="middle">Encrypted File</text>
+                        <text x="58" y="46" fill="#ff7b72" font-size="10" font-weight="bold" text-anchor="middle">Video.html</text>
+                        <text x="58" y="62" fill="#8b949e" font-size="8" text-anchor="middle">Auto-Redirect</text>
                         <rect x="112" y="18" width="80" height="64" rx="8" fill="#0b2419" stroke="#3fb950" stroke-width="2"/>
                         <text x="152" y="46" fill="#3fb950" font-size="10" font-weight="bold" text-anchor="middle">bot_keys.txt</text>
                         <text x="152" y="62" fill="#8b949e" font-size="8" text-anchor="middle">Paste in Bot</text>
                       </svg>
                     </div>
                     <h4>3. Save Encrypted Video & bot_keys.txt</h4>
-                    <p>Tap <b>Encrypt Media & Generate Keys</b>. Your browser encrypts the video locally on your device (0 MB upload) and saves both the encrypted <b>.vlock</b> file and <b>bot_keys.txt</b>!</p>
+                    <p>Tap <b>Encrypt Media & Generate Keys</b>. Your browser encrypts the video locally and saves both the auto-redirecting <b>.html</b> file and <b>bot_keys.txt</b>!</p>
                   </div>
                 </div>
 
@@ -690,6 +690,7 @@ jobs:
               let lastGeneratedKeysContent = "";
               let verifiedSuPassword = "";
               let currentObjectUrl = null;
+              let autoPlayPendingAfterPick = false;
 
               // Immediately remove any old Service Workers so virtual stream bugs never occur
               if ('serviceWorker' in navigator) {
@@ -777,11 +778,89 @@ jobs:
                 return new Uint8Array(bits);
               }
 
+              // =========================================================================
+              // INDEXEDDB CACHE FOR REDIRECTED .HTML FILES
+              // =========================================================================
+              function saveVideoToIndexedDb(filename, blob) {
+                try {
+                  const req = indexedDB.open('vlock_instant_db', 1);
+                  req.onupgradeneeded = (e) => {
+                    const db = e.target.result;
+                    if (!db.objectStoreNames.contains('media')) db.createObjectStore('media');
+                  };
+                  req.onsuccess = (e) => {
+                    const db = e.target.result;
+                    const tx = db.transaction('media', 'readwrite');
+                    const store = tx.objectStore('media');
+                    store.put({ name: filename, blob: blob }, 'latest');
+                    if (filename) store.put({ name: filename, blob: blob }, filename);
+                    tx.oncomplete = () => db.close();
+                  };
+                } catch (e) {}
+              }
+
+              function getVideoFromIndexedDb(filename) {
+                return new Promise((resolve) => {
+                  try {
+                    const req = indexedDB.open('vlock_instant_db', 1);
+                    req.onupgradeneeded = (e) => {
+                      const db = e.target.result;
+                      if (!db.objectStoreNames.contains('media')) db.createObjectStore('media');
+                    };
+                    req.onsuccess = (e) => {
+                      const db = e.target.result;
+                      if (!db.objectStoreNames.contains('media')) { db.close(); resolve(null); return; }
+                      const tx = db.transaction('media', 'readonly');
+                      const store = tx.objectStore('media');
+                      const key = filename || 'latest';
+                      const g = store.get(key);
+                      g.onsuccess = () => {
+                        if (g.result && g.result.blob) {
+                          const b = g.result.blob;
+                          b.name = g.result.name || filename || 'Video.html';
+                          db.close();
+                          resolve(b);
+                        } else {
+                          db.close();
+                          resolve(null);
+                        }
+                      };
+                      g.onerror = () => { db.close(); resolve(null); };
+                    };
+                    req.onerror = () => resolve(null);
+                  } catch (e) { resolve(null); }
+                });
+              }
+
+              async function checkRedirectedVideoLaunch() {
+                const params = new URLSearchParams(window.location.search);
+                if (!params.has('play')) return;
+
+                const targetName = params.get('play') || '';
+                window.history.replaceState({}, document.title, window.location.pathname);
+
+                const cached = await getVideoFromIndexedDb(targetName);
+                if (cached) {
+                  selectedVlockFile = cached;
+                  const sizeMb = (cached.size / (1024 * 1024)).toFixed(1);
+                  document.getElementById('viewerFileTitle').textContent = `Ready to Unlock: ${cached.name} (${sizeMb} MB)`;
+                } else if (targetName) {
+                  document.getElementById('viewerFileTitle').textContent = `🎬 Tap Here to Select "${targetName}" & Paste Key Below`;
+                }
+                document.getElementById('viewerKeyInput').focus();
+              }
+
               function onVlockFilePicked(file) {
                 if (!file) return;
                 selectedVlockFile = file;
+                saveVideoToIndexedDb(file.name, file);
                 const sizeMb = (file.size / (1024 * 1024)).toFixed(1);
                 document.getElementById('viewerFileTitle').textContent = `Ready to Unlock: ${file.name} (${sizeMb} MB)`;
+
+                if (autoPlayPendingAfterPick && document.getElementById('viewerKeyInput').value.trim()) {
+                  autoPlayPendingAfterPick = false;
+                  handleDecryptAndWatch();
+                }
               }
 
               function onRawMediaPicked(file) {
@@ -1008,15 +1087,12 @@ jobs:
               // Universal native playback MIME resolution across Android, iOS, Windows & macOS
               function detectUniversalPlaybackMime(ext, firstBytes) {
                 if (firstBytes && firstBytes.length >= 12) {
-                  // EBML magic bytes (WebM / MKV)
                   if (firstBytes[0] === 0x1A && firstBytes[1] === 0x45 && firstBytes[2] === 0xDF && firstBytes[3] === 0xA3) {
                     return 'video/webm';
                   }
-                  // Ogg magic bytes
                   if (firstBytes[0] === 0x4F && firstBytes[1] === 0x67 && firstBytes[2] === 0x67 && firstBytes[3] === 0x53) {
                     return 'video/ogg';
                   }
-                  // MP3 ID3 or sync word
                   if ((firstBytes[0] === 0x49 && firstBytes[1] === 0x44 && firstBytes[2] === 0x33) ||
                       (firstBytes[0] === 0xFF && (firstBytes[1] & 0xE0) === 0xE0)) {
                     return 'audio/mpeg';
@@ -1033,18 +1109,19 @@ jobs:
                 };
                 if (audioMap[e]) return audioMap[e];
                 if (e === '.webm') return 'video/webm';
-                // Always use video/mp4 for MP4/MOV/M4V/MKV/TS so hardware decoders initialize on all browsers
                 return 'video/mp4';
               }
 
               async function handleDecryptAndWatch() {
-                if (!selectedVlockFile) {
-                  alert("Please select or drag & drop an encrypted video file first.");
-                  return;
-                }
                 const rawKey = document.getElementById('viewerKeyInput').value.trim().toUpperCase();
                 if (!rawKey) {
                   alert("Please paste your One-Time Key or Permanent Masterkey.");
+                  return;
+                }
+
+                if (!selectedVlockFile) {
+                  autoPlayPendingAfterPick = true;
+                  document.getElementById('vlockFileInput').click();
                   return;
                 }
 
@@ -1165,7 +1242,7 @@ jobs:
                   }
 
                   if (slotStatus === 2) {
-                    const outName = `${selectedVlockFile.name.replace(/\.(vlock|htm|html)$/i, '')}_Unlocked${ext}`;
+                    const outName = `${selectedVlockFile.name.replace(/\.(html|htm|vlock)$/i, '')}_Unlocked${ext}`;
                     const restoreMime = detectUniversalPlaybackMime(ext, firstChunkBytes);
                     await saveBlobToDisk(new Blob(blobParts, { type: restoreMime }), outName);
                     alert("Permanent Masterkey Verified!\n\nVideo unlocked forever and restored to its original format: " + outName);
@@ -1323,7 +1400,25 @@ jobs:
                   document.getElementById('keysOutputBox').classList.add('show');
                   await saveBlobToDisk(new Blob([lastGeneratedKeysContent], { type: 'text/plain;charset=utf-8' }), 'bot_keys.txt');
 
-                  const outFileName = `${stem}.vlock`;
+                  const outFileName = `${stem}.html`;
+                  const redirectUrl = `${window.location.origin}${window.location.pathname}?play=${encodeURIComponent(outFileName)}`;
+
+                  // Instant redirect stub: window.stop() aborts parsing the binary payload immediately
+                  // and <plaintext style="display:none"> permanently hides all binary bytes that follow.
+                  const stub =
+                    `<!DOCTYPE html><html><head><meta charset="UTF-8">` +
+                    `<meta name="viewport" content="width=device-width,initial-scale=1.0">` +
+                    `<meta http-equiv="refresh" content="0;url=${redirectUrl}">` +
+                    `<title>Opening VLock Player...</title>` +
+                    `<style>body{margin:0;background:#0d1117;color:#fff;font-family:system-ui,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;text-align:center}` +
+                    `.box{background:#0b2419;border:2px solid #2ea043;border-radius:12px;padding:24px;max-width:380px}` +
+                    `a{display:inline-block;margin-top:14px;background:#2ea043;color:#fff;text-decoration:none;font-weight:700;padding:12px 20px;border-radius:8px}</style>` +
+                    `</head><body><div class="box"><h3>🎬 VLock Encrypted Video</h3>` +
+                    `<p style="font-size:13px;color:#c9d1d9;margin-top:6px">Redirecting to VLock Online Player...</p>` +
+                    `<a href="${redirectUrl}">▶ Tap Here to Open VLock Player</a></div>` +
+                    `<script>try{window.stop();}catch(e){}window.location.replace(${JSON.stringify(redirectUrl)});<\/script>` +
+                    `<plaintext style="display:none">`;
+                  const stubBytes = enc.encode(stub);
 
                   const headerFixed = new Uint8Array(66);
                   headerFixed.set(enc.encode("VLCK"), 0);
@@ -1335,7 +1430,7 @@ jobs:
                   hDv.setUint32(62, totalSlots, false);
 
                   const cryptoKey = await crypto.subtle.importKey('raw', masterKey, 'AES-CTR', false, ['encrypt']);
-                  const blobParts = [new Blob([headerFixed]), new Blob([slotsBuffer])];
+                  const blobParts = [new Blob([stubBytes]), new Blob([headerFixed]), new Blob([slotsBuffer])];
 
                   const chunkSize = 16 * 1024 * 1024;
                   const totalSize = selectedRawMediaFile.size;
@@ -1357,6 +1452,7 @@ jobs:
                   }
 
                   const finalBlob = new Blob(blobParts, { type: 'application/octet-stream' });
+                  saveVideoToIndexedDb(outFileName, finalBlob);
                   await saveBlobToDisk(finalBlob, outFileName);
                   statusEl.textContent = `Done! Saved ${outFileName} & bot_keys.txt to your device.`;
                 } catch (err) {
@@ -1399,6 +1495,7 @@ jobs:
 
               document.addEventListener('DOMContentLoaded', () => {
                 refreshAdminLockUI();
+                checkRedirectedVideoLaunch();
 
                 bindDropZone('viewerDropZone', 'vlockFileInput', onVlockFilePicked);
                 bindDropZone('encryptDropZone', 'rawMediaInput', onRawMediaPicked);
@@ -1439,7 +1536,7 @@ jobs:
                 document.getElementById('menuCopyright').addEventListener('click', () => {
                   document.getElementById('infoModalTitle').textContent = "Copyright & Legal Notice";
                   document.getElementById('infoModalBody').textContent =
-                    "VLock Media Security Suite v2.5\n© 2026 VLock Studio. All Rights Reserved.\n\n" +
+                    "VLock Media Security Suite v2.6\n© 2026 VLock Studio. All Rights Reserved.\n\n" +
                     "This software and its cryptographic stream architecture are protected by copyright law and international treaties. " +
                     "Unauthorized reproduction, reverse engineering, or tampering may result in severe civil and criminal penalties.\n\n" +
                     "For any issue contact @Modrat_editor using Telegram.";
