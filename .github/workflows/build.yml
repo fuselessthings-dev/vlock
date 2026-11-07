@@ -112,7 +112,7 @@ jobs:
             <meta http-equiv="Pragma" content="no-cache" />
             <meta http-equiv="Expires" content="0" />
             <meta name="theme-color" content="#161b22" />
-            <title>VLock v3.1 — User Decryption & Admin Encryption</title>
+            <title>VLock v3.2 — User Decryption & Admin Encryption</title>
             <style>
               :root {
                 --bg-dark: #0d1117;
@@ -235,7 +235,7 @@ jobs:
               .progress-fill { height: 100%; width: 0%; background: var(--red-bright); transition: width 0.1s; }
 
               .keys-output-box {
-                display: none; flex-direction: column; gap: 6px; background: #140507; border: 1px solid #da3633;
+                display: none; flex-direction: column; gap: 8px; background: #140507; border: 1px solid #da3633;
                 border-radius: 8px; padding: 10px; margin-top: 4px;
               }
               .keys-output-box.show { display: flex; }
@@ -316,7 +316,7 @@ jobs:
             <!-- TOP BAR -->
             <div class="topbar">
               <div class="brand">
-                <h1>VLock v3.1</h1>
+                <h1>VLock v3.2</h1>
                 <span>User Decryption & Admin Encryption</span>
               </div>
               <div class="top-actions">
@@ -351,7 +351,7 @@ jobs:
                   </svg>
                   <div class="nle-text">
                     <h3 id="viewerFileTitle">Tap or Drag & Drop Encrypted Video (.html / .htm / .vlock) Here</h3>
-                    <p>Plays natively on all devices • Instant local playback (0 MB internet upload)</p>
+                    <p id="viewerFileSub">Select the encrypted .html file (not the unencrypted .mkv/.mp4) • 0 MB upload</p>
                   </div>
                 </div>
 
@@ -437,11 +437,12 @@ jobs:
                   <span id="encryptStatusText" style="font-size:12px;color:#ffa198;">Ready. Set Temporary Keys or check Permanent Masterkey (or both).</span>
 
                   <div class="keys-output-box" id="keysOutputBox">
-                    <div style="display:flex;justify-content:space-between;align-items:center;">
-                      <span style="font-size:12px;font-weight:700;color:#3fb950;">Generated Keys (bot_keys.txt):</span>
-                      <div style="display:flex;gap:6px;">
-                        <button type="button" class="btn btn-green" id="btnCopyBotKeys" style="padding:5px 10px;font-size:11px;">Copy All Keys</button>
-                        <button type="button" class="btn btn-blue" id="btnDownloadBotKeys" style="padding:5px 10px;font-size:11px;">Download bot_keys.txt</button>
+                    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;">
+                      <span style="font-size:12px;font-weight:700;color:#3fb950;">Generated Keys & Encrypted File:</span>
+                      <div style="display:flex;gap:6px;flex-wrap:wrap;">
+                        <button type="button" class="btn btn-red" id="btnDownloadEncryptedHtml" style="padding:6px 11px;font-size:11.5px;">⬇ Download Encrypted .html</button>
+                        <button type="button" class="btn btn-green" id="btnCopyBotKeys" style="padding:6px 11px;font-size:11.5px;">Copy All Keys</button>
+                        <button type="button" class="btn btn-blue" id="btnDownloadBotKeys" style="padding:6px 11px;font-size:11.5px;">Download bot_keys.txt</button>
                       </div>
                     </div>
                     <textarea id="keysTextarea" class="keys-textarea" readonly></textarea>
@@ -493,18 +494,18 @@ jobs:
                   </div>
 
                   <div class="step-card">
-                    <span class="step-badge badge-green">STEP 2 • SELECT FILE</span>
+                    <span class="step-badge badge-green">STEP 2 • SELECT .HTML FILE</span>
                     <div class="step-visual">
                       <svg width="210" height="100" viewBox="0 0 210 100" fill="none">
                         <rect x="15" y="14" width="180" height="72" rx="10" fill="#071710" stroke="#3fb950" stroke-width="2" stroke-dasharray="6 4"/>
                         <rect x="35" y="32" width="36" height="32" rx="4" stroke="#3fb950" stroke-width="2"/>
                         <path d="M53 41 V55 M46 48 H60" stroke="#ffffff" stroke-width="2.5" stroke-linecap="round"/>
-                        <text x="84" y="46" fill="#ffffff" font-size="11" font-weight="bold">Tap or Drop Video</text>
+                        <text x="84" y="46" fill="#ffffff" font-size="11" font-weight="bold">Pick Episode.html</text>
                         <text x="84" y="62" fill="#3fb950" font-size="9">Green User Panel</text>
                       </svg>
                     </div>
-                    <h4>2. Add File to Green Panel</h4>
-                    <p>Tap the dashed box in the green <b>USER PANEL • Decryption Panel</b> and select the downloaded encrypted file.</p>
+                    <h4>2. Add .html File to Green Panel</h4>
+                    <p>Tap the dashed box in the green <b>USER PANEL • Decryption Panel</b> and select the downloaded <b>.html</b> file.</p>
                   </div>
 
                   <div class="step-card">
@@ -571,7 +572,7 @@ jobs:
                       </svg>
                     </div>
                     <h4>3. Save Encrypted Video & bot_keys.txt</h4>
-                    <p>Tap <b>Encrypt Media & Generate Keys</b>. Your browser encrypts the video locally and saves both the auto-redirecting <b>.html</b> file and <b>bot_keys.txt</b>!</p>
+                    <p>Tap <b>Encrypt Media & Generate Keys</b>. Your browser encrypts the video locally, saves the <b>.html</b> file, and auto-loads it into the User Panel!</p>
                   </div>
                 </div>
 
@@ -692,7 +693,7 @@ jobs:
               <div class="modal">
                 <h2 id="infoModalTitle">Notice</h2>
                 <p id="infoModalBody"></p>
-                <div style="display:flex;gap:8px;justify-content:flex-wrap;justify-content:flex-end;">
+                <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;">
                   <button type="button" class="btn btn-dark" id="btnCopyTelegram">Copy @Modrat_editor</button>
                   <a href="https://t.me/Modrat_editor" target="_blank" rel="noopener" class="btn btn-blue">Open Telegram</a>
                   <button type="button" class="btn btn-dark" id="btnCloseInfoModal">Close</button>
@@ -715,6 +716,8 @@ jobs:
 
               let selectedVlockFile = null;
               let selectedRawMediaFile = null;
+              let lastEncryptedFileObj = null;
+              let lastEncryptedFileName = "";
               let customDirectoryHandle = null;
               let lastGeneratedKeysContent = "";
               let verifiedSuPassword = "";
@@ -734,6 +737,12 @@ jobs:
                 if (err.message) return err.message;
                 if (err.type) return "Media/Worker error (" + err.type + ")";
                 try { return JSON.stringify(err); } catch (e) { return String(err); }
+              }
+
+              function getStem(filename) {
+                const name = (filename || "").trim();
+                const dot = name.lastIndexOf('.');
+                return (dot > 0 ? name.slice(0, dot) : name).toLowerCase();
               }
 
               function hexToBytes(hex) {
@@ -815,6 +824,25 @@ jobs:
                 return new Uint8Array(bits);
               }
 
+              async function findVlockHeaderOffset(blobOrFile) {
+                if (!blobOrFile || !blobOrFile.size) return -1;
+                const probeLen = Math.min(blobOrFile.size, 1024 * 1024);
+                const probeBytes = new Uint8Array(await blobOrFile.slice(0, probeLen).arrayBuffer());
+                for (let i = 0; i <= probeBytes.length - 6; i++) {
+                  const ver = (probeBytes[i + 4] << 8) | probeBytes[i + 5];
+                  if (
+                    probeBytes[i] === 0x56 &&
+                    probeBytes[i + 1] === 0x4C &&
+                    probeBytes[i + 2] === 0x43 &&
+                    probeBytes[i + 3] === 0x4B &&
+                    (ver === 1 || ver === 2)
+                  ) {
+                    return i;
+                  }
+                }
+                return -1;
+              }
+
               // =========================================================================
               // INDEXEDDB CACHE FOR REDIRECTED .HTML FILES
               // =========================================================================
@@ -832,7 +860,6 @@ jobs:
                         const tx = db.transaction('media', 'readwrite');
                         const store = tx.objectStore('media');
                         store.put({ name: filename, blob: blob }, 'latest');
-                        if (filename) store.put({ name: filename, blob: blob }, filename);
                         tx.oncomplete = () => { db.close(); resolve(); };
                         tx.onerror = () => { db.close(); resolve(); };
                       } catch (err) { resolve(); }
@@ -855,27 +882,14 @@ jobs:
                       if (!db.objectStoreNames.contains('media')) { db.close(); resolve(null); return; }
                       const tx = db.transaction('media', 'readonly');
                       const store = tx.objectStore('media');
-                      const key = filename || 'latest';
-                      const g = store.get(key);
+                      const g = store.get('latest');
                       g.onsuccess = () => {
+                        db.close();
                         if (g.result && g.result.blob) {
                           const b = g.result.blob;
                           b.name = g.result.name || filename || 'Video.html';
-                          db.close();
                           resolve(b);
-                        } else if (key !== 'latest') {
-                          const g2 = store.get('latest');
-                          g2.onsuccess = () => {
-                            db.close();
-                            if (g2.result && g2.result.blob) {
-                              const b = g2.result.blob;
-                              b.name = g2.result.name || 'Video.html';
-                              resolve(b);
-                            } else resolve(null);
-                          };
-                          g2.onerror = () => { db.close(); resolve(null); };
                         } else {
-                          db.close();
                           resolve(null);
                         }
                       };
@@ -886,12 +900,45 @@ jobs:
                 });
               }
 
-              function onVlockFilePicked(file, showPopup = true) {
+              async function onVlockFilePicked(file, showPopup = true) {
                 if (!file) return;
-                selectedVlockFile = file;
-                saveVideoToIndexedDb(file.name, file);
-                const sizeMb = (file.size / (1024 * 1024)).toFixed(1);
-                document.getElementById('viewerFileTitle').textContent = `Ready to Unlock: ${file.name} (${sizeMb} MB)`;
+
+                let chosenFile = file;
+                let headerOff = -1;
+                try {
+                  headerOff = await findVlockHeaderOffset(chosenFile);
+                } catch (e) {}
+
+                // If user accidentally picked the raw unencrypted .mkv/.mp4 instead of the encrypted .html:
+                if (headerOff === -1) {
+                  const pickedStem = getStem(file.name);
+                  if (lastEncryptedFileObj && getStem(lastEncryptedFileName) === pickedStem) {
+                    chosenFile = lastEncryptedFileObj;
+                    headerOff = await findVlockHeaderOffset(chosenFile);
+                  } else {
+                    const cached = await getVideoFromIndexedDb(pickedStem + ".html");
+                    if (cached && getStem(cached.name) === pickedStem) {
+                      const cachedOff = await findVlockHeaderOffset(cached);
+                      if (cachedOff !== -1) {
+                        chosenFile = cached;
+                        headerOff = cachedOff;
+                      }
+                    }
+                  }
+                }
+
+                if (headerOff === -1) {
+                  alert(
+                    `⚠️ "${file.name}" is an UNENCRYPTED original video file!\n\n` +
+                    `To unlock & watch in the Green User Panel, please select the encrypted "${getStem(file.name)}.html" file (or encrypt "${file.name}" first in the Red Admin Panel below).`
+                  );
+                  return;
+                }
+
+                selectedVlockFile = chosenFile;
+                saveVideoToIndexedDb(chosenFile.name, chosenFile);
+                const sizeMb = (chosenFile.size / (1024 * 1024)).toFixed(1);
+                document.getElementById('viewerFileTitle').textContent = `Ready to Unlock: ${chosenFile.name} (${sizeMb} MB)`;
 
                 const currentKey = document.getElementById('viewerKeyInput').value.trim();
                 if (autoPlayPendingAfterPick && currentKey) {
@@ -901,7 +948,7 @@ jobs:
                 }
 
                 if (showPopup) {
-                  document.getElementById('instantKeyModalFileLabel').textContent = `🎬 Ready to Play: ${file.name} (${sizeMb} MB)`;
+                  document.getElementById('instantKeyModalFileLabel').textContent = `🎬 Ready to Play: ${chosenFile.name} (${sizeMb} MB)`;
                   document.getElementById('instantKeyModal').classList.add('show');
                   setTimeout(() => {
                     const modalInput = document.getElementById('modalViewerKeyInput');
@@ -919,10 +966,13 @@ jobs:
 
                 const cached = await getVideoFromIndexedDb(targetName);
                 if (cached) {
-                  selectedVlockFile = cached;
-                  const sizeMb = (cached.size / (1024 * 1024)).toFixed(1);
-                  document.getElementById('viewerFileTitle').textContent = `Ready to Unlock: ${cached.name} (${sizeMb} MB)`;
-                  document.getElementById('instantKeyModalFileLabel').textContent = `🎬 Ready to Play: ${cached.name} (${sizeMb} MB)`;
+                  const off = await findVlockHeaderOffset(cached).catch(() => -1);
+                  if (off !== -1) {
+                    selectedVlockFile = cached;
+                    const sizeMb = (cached.size / (1024 * 1024)).toFixed(1);
+                    document.getElementById('viewerFileTitle').textContent = `Ready to Unlock: ${cached.name} (${sizeMb} MB)`;
+                    document.getElementById('instantKeyModalFileLabel').textContent = `🎬 Ready to Play: ${cached.name} (${sizeMb} MB)`;
+                  }
                 } else {
                   document.getElementById('instantKeyModalFileLabel').textContent = targetName
                     ? `🎬 Opening "${targetName}" — Paste your key & tap Decrypt & Watch:`
@@ -1188,7 +1238,6 @@ jobs:
                 return ['video/mp4', ''];
               }
 
-              // Keep probe video inside the viewport (4x4px, opacity 0.01) so Chrome never throttles frame decoding
               function probeCanDecodeRealVideoFrames(blob, expectVideoTrack, timeoutMs = 2500) {
                 return new Promise((resolve) => {
                   const probeVideo = document.createElement('video');
@@ -1219,7 +1268,7 @@ jobs:
                     if (typeof probeVideo.webkitDecodedFrameCount === 'number') {
                       if (probeVideo.webkitDecodedFrameCount > 0) return true;
                     }
-                    return probeVideo.readyState >= 2 && probeVideo.currentTime > 0;
+                    return probeVideo.readyState >= 2 && (probeVideo.currentTime > 0 || probeVideo.readyState >= 3);
                   };
 
                   const finish = (ok) => {
@@ -1283,7 +1332,6 @@ jobs:
                   const coreUrl = new URL('./ffmpeg-core.js', window.location.href).href;
                   const wasmUrl = new URL('./ffmpeg-core.wasm', window.location.href).href;
 
-                  // Do NOT pass classWorkerURL: ./ffmpeg.js automatically loads same-origin ./814.ffmpeg.js as a classic Worker
                   await ffmpegInstance.load({
                     coreURL: coreUrl,
                     wasmURL: wasmUrl
@@ -1325,7 +1373,7 @@ jobs:
                   }
                 } catch (e) {}
 
-                // Stage B: Full Universal 8-bit H.264 (yuv420p) + AAC transcode (fixes HEVC / H.265 / 10-bit Hi10P)
+                // Stage B: Full Universal 8-bit H.264 (yuv420p) + AAC transcode
                 statusCallback("Converting codec to Universal H.264 MP4...");
                 const ret2 = await ffmpegInstance.exec([
                   "-i", inName,
@@ -1362,6 +1410,10 @@ jobs:
                   return;
                 }
 
+                if (!selectedVlockFile && lastEncryptedFileObj) {
+                  selectedVlockFile = lastEncryptedFileObj;
+                }
+
                 if (!selectedVlockFile) {
                   autoPlayPendingAfterPick = true;
                   document.getElementById('vlockFileInput').click();
@@ -1387,10 +1439,9 @@ jobs:
                   const targetKeyId = (await sha256Bytes(kBytes)).slice(0, 15);
                   const wrapMask = await sha256Bytes(concatBytes(kBytes, enc.encode("VLOCK_WRAP")));
 
-                  const probeLen = Math.min(selectedVlockFile.size, 1024 * 1024);
-                  let probeBytes;
+                  let vlockStart = -1;
                   try {
-                    probeBytes = new Uint8Array(await selectedVlockFile.slice(0, probeLen).arrayBuffer());
+                    vlockStart = await findVlockHeaderOffset(selectedVlockFile);
                   } catch (readErr) {
                     selectedVlockFile = null;
                     autoPlayPendingAfterPick = true;
@@ -1398,22 +1449,20 @@ jobs:
                     return;
                   }
 
-                  let vlockStart = -1;
-                  for (let i = 0; i <= probeBytes.length - 6; i++) {
-                    const ver = (probeBytes[i + 4] << 8) | probeBytes[i + 5];
-                    if (
-                      probeBytes[i] === 0x56 &&
-                      probeBytes[i + 1] === 0x4C &&
-                      probeBytes[i + 2] === 0x43 &&
-                      probeBytes[i + 3] === 0x4B &&
-                      (ver === 1 || ver === 2)
-                    ) {
-                      vlockStart = i;
-                      break;
+                  // If selectedVlockFile was an unencrypted raw .mkv/.mp4, check if the encrypted .html is in memory/cache
+                  if (vlockStart === -1 && lastEncryptedFileObj) {
+                    const altStart = await findVlockHeaderOffset(lastEncryptedFileObj);
+                    if (altStart !== -1) {
+                      selectedVlockFile = lastEncryptedFileObj;
+                      vlockStart = altStart;
                     }
                   }
+
                   if (vlockStart === -1) {
-                    throw new Error("Not a valid VLock encrypted file.");
+                    throw new Error(
+                      `"${selectedVlockFile.name}" is an UNENCRYPTED video file.\n\n` +
+                      `Please select the encrypted "${getStem(selectedVlockFile.name)}.html" file instead of "${selectedVlockFile.name}".`
+                    );
                   }
 
                   const headBuf = await selectedVlockFile.slice(vlockStart, vlockStart + 66).arrayBuffer();
@@ -1516,7 +1565,6 @@ jobs:
                   const candidateMimes = getCandidateMimes(ext, firstChunkBytes);
                   let playableBlob = null;
 
-                  // Stage 1: In-viewport probe checks if hardware decoder produces real video frames (videoWidth > 0)
                   for (const mime of candidateMimes) {
                     const testBlob = mime ? new Blob(blobParts, { type: mime }) : new Blob(blobParts);
                     const ok = await probeCanDecodeRealVideoFrames(testBlob, expectVideo, 2200);
@@ -1526,12 +1574,10 @@ jobs:
                     }
                   }
 
-                  // Stage 2: If 0 frames decoded (e.g. MKV/HEVC/10-bit H.264), convert via same-origin FFmpeg into Universal H.264 MP4
                   if (!playableBlob) {
                     playableBlob = await convertToUniversalPlayableMp4(blobParts, ext, expectVideo, (msg) => setBtnsText(msg, true));
                   }
 
-                  // Burn temporary key after playable stream is ready
                   burnedKeys[keyHex] = Date.now();
                   localStorage.setItem('vlock_burned_keys', JSON.stringify(burnedKeys));
 
@@ -1575,7 +1621,7 @@ jobs:
                 document.body.appendChild(a);
                 a.click();
                 a.remove();
-                setTimeout(() => URL.revokeObjectURL(url), 10000);
+                setTimeout(() => URL.revokeObjectURL(url), 15000);
               }
 
               function generateHumanKey(prefix) {
@@ -1670,7 +1716,7 @@ jobs:
                   lastGeneratedKeysContent = keyLines.join('\n') + '\n';
                   document.getElementById('keysTextarea').value = lastGeneratedKeysContent;
                   document.getElementById('keysOutputBox').classList.add('show');
-                  await saveBlobToDisk(new Blob([lastGeneratedKeysContent], { type: 'text/plain;charset=utf-8' }), 'bot_keys.txt');
+                  try { await navigator.clipboard.writeText(lastGeneratedKeysContent); } catch (e) {}
 
                   const outFileName = `${stem}.html`;
                   const redirectUrl = `${window.location.origin}${window.location.pathname}?play=${encodeURIComponent(outFileName)}`;
@@ -1722,9 +1768,25 @@ jobs:
                   }
 
                   const finalBlob = new Blob(blobParts, { type: 'application/octet-stream' });
-                  await saveVideoToIndexedDb(outFileName, finalBlob);
+                  lastEncryptedFileName = outFileName;
+                  try {
+                    lastEncryptedFileObj = new File([finalBlob], outFileName, { type: 'application/octet-stream' });
+                  } catch (e) {
+                    finalBlob.name = outFileName;
+                    lastEncryptedFileObj = finalBlob;
+                  }
+
+                  // Automatically load the newly encrypted .html file into the Green User Panel!
+                  selectedVlockFile = lastEncryptedFileObj;
+                  const sizeMb = (finalBlob.size / (1024 * 1024)).toFixed(1);
+                  document.getElementById('viewerFileTitle').textContent = `Ready to Unlock: ${outFileName} (${sizeMb} MB)`;
+                  document.getElementById('btnDownloadEncryptedHtml').textContent = `⬇ Download ${outFileName}`;
+
+                  // Download the encrypted .html file FIRST (before IndexedDB) so mobile Chrome never blocks it
                   await saveBlobToDisk(finalBlob, outFileName);
-                  statusEl.textContent = `Done! Saved ${outFileName} & bot_keys.txt to your device.`;
+                  saveVideoToIndexedDb(outFileName, finalBlob);
+
+                  statusEl.textContent = `Done! ${outFileName} downloaded & auto-loaded into Green User Panel above (Keys copied to clipboard).`;
                 } catch (err) {
                   alert("Encryption error: " + formatError(err));
                   statusEl.textContent = "Error: " + formatError(err);
@@ -1827,7 +1889,7 @@ jobs:
                 document.getElementById('menuCopyright').addEventListener('click', () => {
                   document.getElementById('infoModalTitle').textContent = "Copyright & Legal Notice";
                   document.getElementById('infoModalBody').textContent =
-                    "VLock Media Security Suite v3.1\n© 2026 VLock Studio. All Rights Reserved.\n\n" +
+                    "VLock Media Security Suite v3.2\n© 2026 VLock Studio. All Rights Reserved.\n\n" +
                     "This software and its cryptographic stream architecture are protected by copyright law and international treaties. " +
                     "Unauthorized reproduction, reverse engineering, or tampering may result in severe civil and criminal penalties.\n\n" +
                     "For any issue contact @Modrat_editor using Telegram.";
@@ -1870,6 +1932,11 @@ jobs:
                 document.getElementById('btnDecryptWatch').addEventListener('click', handleDecryptAndWatch);
                 document.getElementById('btnStartEncrypt').addEventListener('click', handleStartEncryption);
 
+                document.getElementById('btnDownloadEncryptedHtml').addEventListener('click', () => {
+                  if (lastEncryptedFileObj) {
+                    saveBlobToDisk(lastEncryptedFileObj, lastEncryptedFileName || 'Encrypted_Video.html');
+                  }
+                });
                 document.getElementById('btnCopyBotKeys').addEventListener('click', () => {
                   if (lastGeneratedKeysContent) copyTextSafe(lastGeneratedKeysContent, "All generated keys copied to clipboard!");
                 });
