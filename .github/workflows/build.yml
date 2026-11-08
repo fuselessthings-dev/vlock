@@ -109,7 +109,7 @@ jobs:
             <meta charset="UTF-8" />
             <meta name="viewport" content="width=device-width, initial-scale=1.0" />
             <meta name="theme-color" content="#161b22" />
-            <title>VLock v3.5 — User Decryption & Admin Encryption</title>
+            <title>VLock v3.6 — User Decryption & Admin Encryption</title>
             <style>
               :root {
                 --bg-dark: #0d1117;
@@ -217,10 +217,10 @@ jobs:
                 padding: 7px 10px; text-align: center;
               }
 
-              /* STATUS BAR & PURE BROWSER NATIVE VIDEO PLAYER */
+              /* LIVE STATUS INDICATOR & PURE BROWSER NATIVE VIDEO PLAYER */
               .player-status-bar {
                 display: none; background: #143d29; border: 1px solid var(--green-bright);
-                color: #ffffff; padding: 10px 14px; border-radius: 8px; font-size: 13px;
+                color: #ffffff; padding: 9px 14px; border-radius: 8px; font-size: 12.5px;
                 font-weight: 700; text-align: center;
               }
               .player-status-bar.show { display: block; }
@@ -320,7 +320,7 @@ jobs:
             <!-- TOP BAR -->
             <div class="topbar">
               <div class="brand">
-                <h1>VLock v3.5</h1>
+                <h1>VLock v3.6</h1>
                 <span>User Decryption & Admin Encryption</span>
               </div>
               <div class="top-actions">
@@ -368,7 +368,7 @@ jobs:
                   ▶ Decrypt & Watch / Unlock
                 </button>
 
-                <!-- VISIBLE PROGRESS / STATUS BAR -->
+                <!-- VISIBLE PROGRESS / SEEK / BUFFER INDICATOR -->
                 <div class="player-status-bar" id="playerStatusBar"></div>
 
                 <!-- PURE BROWSER NATIVE PLAYER WITHOUT DOWNLOAD BUTTON -->
@@ -717,9 +717,9 @@ jobs:
               const ZK_PUB_X_B64U = "__ZK_PUB_X_B64U__";
               const ZK_PUB_Y_B64U = "__ZK_PUB_Y_B64U__";
               const SLOT_SIZE = 48;
-              const DB_NAME = "vlock_verified_db_v35";
+              const DB_NAME = "vlock_verified_db_v36";
               const ENGINE_DB_NAME = "vlock_engine_cache_v1";
-              const BURNED_KEYS_STORAGE = "vlock_burned_keys_v35";
+              const BURNED_KEYS_STORAGE = "vlock_burned_keys_v36";
 
               const CODE_TO_SECONDS = { "1D": 86400, "1W": 7 * 86400, "1M": 30 * 86400, "1Y": 365 * 86400, "LT": -1 };
               const CODE_TO_LABEL = { "1D": "1 Day", "1W": "1 Week", "1M": "1 Month", "1Y": "1 Year", "LT": "Lifetime" };
@@ -734,6 +734,8 @@ jobs:
               let currentAuxAudioUrl = null;
               let autoPlayPendingAfterPick = false;
               let ffmpegInstance = null;
+              let ffmpegLastLogs = [];
+              let activeMseJobId = 0;
 
               if ('serviceWorker' in navigator) {
                 navigator.serviceWorker.getRegistrations().then((regs) => {
@@ -748,6 +750,13 @@ jobs:
                 if (err.message) return err.message;
                 if (err.type) return "Media/Worker error (" + err.type + ")";
                 try { return JSON.stringify(err); } catch (e) { return String(err); }
+              }
+
+              function formatTimeMmSs(sec) {
+                const s = Math.max(0, Math.floor(sec || 0));
+                const m = Math.floor(s / 60);
+                const r = s % 60;
+                return `${String(m).padStart(2, '0')}:${String(r).padStart(2, '0')}`;
               }
 
               function hexToBytes(hex) {
@@ -1310,7 +1319,7 @@ jobs:
               }
 
               // =========================================================================
-              // DIRECT REAL-PLAYER ENGINE & 1-SECOND LOSSLESS STREAM-COPY REMUX
+              // UNIVERSAL VIDEO ENGINE: NATIVE -> 1S REMUX -> FAST CONTINUOUS MSE STREAM
               // =========================================================================
               function isAudioOnlyExt(ext) {
                 const e = (ext || '').toLowerCase();
@@ -1378,7 +1387,7 @@ jobs:
                 }
               }
 
-              function bindAuxAudioSync(videoEl, rawMediaBlob) {
+              function bindAuxAudioSync(videoEl, rawMediaBlob, onCustomSeek) {
                 clearAuxAudio();
                 const aux = document.getElementById('vlockAuxAudio');
                 currentAuxAudioUrl = URL.createObjectURL(rawMediaBlob);
@@ -1386,7 +1395,7 @@ jobs:
                 aux.load();
 
                 videoEl.onplay = () => {
-                  if (Math.abs(aux.currentTime - videoEl.currentTime) > 0.25) {
+                  if (Math.abs(aux.currentTime - videoEl.currentTime) > 0.3) {
                     aux.currentTime = videoEl.currentTime;
                   }
                   aux.playbackRate = videoEl.playbackRate;
@@ -1395,7 +1404,11 @@ jobs:
                   aux.play().catch(() => {});
                 };
                 videoEl.onpause = () => aux.pause();
-                videoEl.onseeking = () => { aux.currentTime = videoEl.currentTime; };
+                videoEl.onseeking = () => {
+                  aux.pause();
+                  aux.currentTime = videoEl.currentTime;
+                  if (onCustomSeek) onCustomSeek(videoEl.currentTime);
+                };
                 videoEl.onseeked = () => {
                   aux.currentTime = videoEl.currentTime;
                   if (!videoEl.paused) aux.play().catch(() => {});
@@ -1407,9 +1420,7 @@ jobs:
                 };
               }
 
-              // Tests a Blob directly on the REAL visible #vlockVideoPlayer by calling .play() while muted
-              // (with controls hidden during the 1s test so Chrome never shows the white audio-only bar)
-              function tryPlayOnRealVideoPlayer(videoEl, blob, expectVideoTrack, timeoutMs = 1500) {
+              function tryPlayOnRealVideoPlayer(videoEl, blob, expectVideoTrack, timeoutMs = 1600) {
                 return new Promise((resolve) => {
                   if (currentObjectUrl) {
                     URL.revokeObjectURL(currentObjectUrl);
@@ -1466,9 +1477,7 @@ jobs:
                   videoEl.onerror = () => finish(false);
                   videoEl.onloadedmetadata = () => {
                     checkDims();
-                    if (!done) {
-                      videoEl.play().catch(() => {});
-                    }
+                    if (!done) videoEl.play().catch(() => {});
                   };
                   videoEl.onloadeddata = checkDims;
 
@@ -1484,18 +1493,25 @@ jobs:
                 }
                 if (ffmpegInstance) return;
 
-                statusCallback("Loading Video Remux Engine...");
+                statusCallback("Loading Video Compatibility Engine...");
                 const coreBuf = await fetchAssetWithProgress('./ffmpeg-core.js', 'core_js_v1', 50000);
                 const wasmBuf = await fetchAssetWithProgress('./ffmpeg-core.wasm', 'core_wasm_v1', 10000000, (pct) => {
                   statusCallback(`Downloading Video Engine (One-Time)... ${pct}%`);
                 });
 
-                statusCallback("Starting Video Remux Engine...");
+                statusCallback("Starting Video Engine...");
                 const coreBlobUrl = URL.createObjectURL(new Blob([coreBuf], { type: 'text/javascript' }));
                 const wasmBlobUrl = URL.createObjectURL(new Blob([wasmBuf], { type: 'application/wasm' }));
 
                 const { FFmpeg } = window.FFmpegWASM;
                 const inst = new FFmpeg();
+                inst.on('log', ({ message }) => {
+                  if (message) {
+                    ffmpegLastLogs.push(message);
+                    if (ffmpegLastLogs.length > 150) ffmpegLastLogs.shift();
+                  }
+                });
+
                 await inst.load({
                   coreURL: coreBlobUrl,
                   wasmURL: wasmBlobUrl
@@ -1503,23 +1519,239 @@ jobs:
                 ffmpegInstance = inst;
               }
 
+              function parseFfmpegProbeLogs(logsText) {
+                let durationSec = 0;
+                const durMatch = logsText.match(/Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/);
+                if (durMatch) {
+                  durationSec = parseInt(durMatch[1], 10) * 3600 + parseInt(durMatch[2], 10) * 60 + parseFloat(durMatch[3]);
+                }
+                let videoCodec = "";
+                let is10Bit = false;
+                const vMatch = logsText.match(/Stream #\d+:\d+.*Video:\s*([a-zA-Z0-9_]+)([^\r\n]*)/);
+                if (vMatch) {
+                  videoCodec = vMatch[1].toLowerCase();
+                  const vDetails = vMatch[2].toLowerCase();
+                  if (vDetails.includes('10le') || vDetails.includes('10be') || vDetails.includes('high 10') || vDetails.includes('main 10')) {
+                    is10Bit = true;
+                  }
+                }
+                let audioCodec = "";
+                const aMatch = logsText.match(/Stream #\d+:\d+.*Audio:\s*([a-zA-Z0-9_]+)/);
+                if (aMatch) {
+                  audioCodec = aMatch[1].toLowerCase();
+                }
+                return { durationSec, videoCodec, is10Bit, audioCodec };
+              }
+
+              // Fast Continuous Software Video Streamer (for 10-bit Hi10P / unsupported hardware codecs)
+              async function startFastContinuousMsePlayback(inName, rawMediaBlob, probeInfo, setStatus) {
+                const jobId = ++activeMseJobId;
+                const videoEl = document.getElementById('vlockVideoPlayer');
+                videoEl.pause();
+                if (currentObjectUrl) {
+                  URL.revokeObjectURL(currentObjectUrl);
+                  currentObjectUrl = null;
+                }
+
+                const mimeCodec = 'video/mp4; codecs="avc1.42E01E"';
+                const MSClass = window.MediaSource || window.ManagedMediaSource;
+                if (!MSClass || !MSClass.isTypeSupported(mimeCodec)) {
+                  throw new Error("MediaSource streaming is not supported on this browser.");
+                }
+
+                const totalDuration = probeInfo.durationSec > 0 ? probeInfo.durationSec : 1800;
+
+                // Ultra-fast video-only segment encoder (-skip_loop_filter all + fast_bilinear + -an = ~12x faster)
+                const encodeFastVideoSegment = async (startSec, durSec, idx) => {
+                  const segName = `vseg_${jobId}_${idx}.mp4`;
+                  const ret = await ffmpegInstance.exec([
+                    "-skip_loop_filter", "all",
+                    "-skip_idct", "all",
+                    "-ss", String(startSec),
+                    "-t", String(durSec),
+                    "-i", inName,
+                    "-map", "0:v:0",
+                    "-an",
+                    "-c:v", "libx264",
+                    "-preset", "ultrafast",
+                    "-tune", "zerolatency",
+                    "-profile:v", "baseline",
+                    "-level", "3.0",
+                    "-crf", "27",
+                    "-pix_fmt", "yuv420p",
+                    "-vf", "scale=480:-2:flags=fast_bilinear,fps=15",
+                    "-g", "30",
+                    "-keyint_min", "30",
+                    "-sc_threshold", "0",
+                    "-f", "mp4",
+                    "-movflags", "frag_keyframe+empty_moov+default_base_moof",
+                    segName
+                  ]);
+                  if (ret !== 0) return null;
+                  const segData = await ffmpegInstance.readFile(segName);
+                  await ffmpegInstance.deleteFile(segName).catch(() => {});
+                  return segData && segData.byteLength > 256 ? segData : null;
+                };
+
+                setStatus("Preparing Initial Video Stream (00:00 – 00:08)...", true);
+                const firstSeg = await encodeFastVideoSegment(0, 8, 0);
+                if (!firstSeg) {
+                  await ffmpegInstance.deleteFile(inName).catch(() => {});
+                  throw new Error("Could not initialize software video decoder.");
+                }
+
+                const mediaSource = new MSClass();
+                currentObjectUrl = URL.createObjectURL(mediaSource);
+
+                let seekRequestedTo = null;
+                bindAuxAudioSync(videoEl, rawMediaBlob, (targetTime) => {
+                  let isBuffered = false;
+                  for (let i = 0; i < videoEl.buffered.length; i++) {
+                    if (targetTime >= videoEl.buffered.start(i) && targetTime <= videoEl.buffered.end(i) - 0.5) {
+                      isBuffered = true;
+                      break;
+                    }
+                  }
+                  if (!isBuffered) {
+                    seekRequestedTo = Math.max(0, Math.floor(targetTime));
+                    setStatus(`⚡ Seeking to ${formatTimeMmSs(seekRequestedTo)}... Preparing video stream...`, true);
+                  }
+                });
+
+                await new Promise((resolve, reject) => {
+                  mediaSource.addEventListener('sourceopen', async () => {
+                    try {
+                      const sb = mediaSource.addSourceBuffer(mimeCodec);
+                      sb.mode = 'sequence';
+                      if (probeInfo.durationSec > 0 && !isNaN(probeInfo.durationSec)) {
+                        try { mediaSource.duration = probeInfo.durationSec; } catch (e) {}
+                      }
+
+                      const waitForSb = () => new Promise((r) => {
+                        if (!sb.updating) { r(); return; }
+                        sb.addEventListener('updateend', () => r(), { once: true });
+                      });
+
+                      sb.timestampOffset = 0;
+                      sb.appendBuffer(firstSeg.buffer);
+                      await waitForSb();
+
+                      resolve({ sb, waitForSb });
+                    } catch (e) {
+                      reject(e);
+                    }
+                  }, { once: true });
+
+                  videoEl.muted = false;
+                  videoEl.controls = true;
+                  document.getElementById('playerWrap').classList.add('active');
+                  document.getElementById('instantKeyModal').classList.remove('show');
+                  videoEl.src = currentObjectUrl;
+                  videoEl.load();
+                }).then(async ({ sb, waitForSb }) => {
+                  videoEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                  await videoEl.play().catch(() => {});
+                  const aux = document.getElementById('vlockAuxAudio');
+                  aux.currentTime = videoEl.currentTime;
+                  aux.play().catch(() => {});
+
+                  // Background continuous segment encoder
+                  (async () => {
+                    let cursorSec = 8;
+                    let segIdx = 1;
+                    const segLen = 15;
+
+                    while (jobId === activeMseJobId && cursorSec < totalDuration) {
+                      // Handle user timeline seek immediately
+                      if (seekRequestedTo !== null) {
+                        cursorSec = seekRequestedTo;
+                        seekRequestedTo = null;
+                        const seekDur = Math.min(10, totalDuration - cursorSec);
+                        if (seekDur > 0.2) {
+                          const seekBytes = await encodeFastVideoSegment(cursorSec, seekDur, segIdx++);
+                          if (jobId !== activeMseJobId) break;
+                          if (seekBytes && mediaSource.readyState === 'open') {
+                            await waitForSb();
+                            try {
+                              sb.timestampOffset = cursorSec;
+                              sb.appendBuffer(seekBytes.buffer);
+                              await waitForSb();
+                              cursorSec += seekDur;
+                              if (!videoEl.paused) {
+                                aux.currentTime = videoEl.currentTime;
+                                aux.play().catch(() => {});
+                              }
+                            } catch (e) {}
+                          }
+                        }
+                        continue;
+                      }
+
+                      // Pause background encoding if buffer is > 60s ahead of playback
+                      const aheadSec = Math.round(cursorSec - videoEl.currentTime);
+                      if (!videoEl.paused && aheadSec > 60) {
+                        setStatus(`🟢 Playing • Stream Buffered Ahead: +${aheadSec}s`, true);
+                        await new Promise(r => setTimeout(r, 800));
+                        continue;
+                      }
+
+                      setStatus(
+                        `🟢 Playing • Buffering Stream (${formatTimeMmSs(cursorSec)} / ${formatTimeMmSs(totalDuration)})`,
+                        true
+                      );
+
+                      const thisStart = cursorSec;
+                      const dur = Math.min(segLen, totalDuration - thisStart);
+                      if (dur <= 0.2) break;
+
+                      const segBytes = await encodeFastVideoSegment(thisStart, dur, segIdx++);
+                      if (jobId !== activeMseJobId) break;
+                      if (!segBytes) break;
+
+                      // If user clicked the timeline while this segment was encoding, discard and jump to seek target
+                      if (seekRequestedTo !== null) continue;
+
+                      await waitForSb();
+                      if (mediaSource.readyState !== 'open') break;
+                      try {
+                        // Do NOT overwrite sb.timestampOffset during sequential 'sequence' mode appends!
+                        sb.appendBuffer(segBytes.buffer);
+                        await waitForSb();
+                        cursorSec += dur;
+                      } catch (appendErr) {
+                        await new Promise(r => setTimeout(r, 400));
+                      }
+                    }
+
+                    if (jobId === activeMseJobId) {
+                      setStatus("", false);
+                      await ffmpegInstance.deleteFile(inName).catch(() => {});
+                      if (mediaSource.readyState === 'open' && !sb.updating) {
+                        try { mediaSource.endOfStream(); } catch (e) {}
+                      }
+                    }
+                  })();
+                });
+              }
+
               async function playMediaChunksInNativePlayer(rawChunks, ext, firstChunkBytes, setStatus) {
+                activeMseJobId++;
                 const videoEl = document.getElementById('vlockVideoPlayer');
                 videoEl.pause();
                 clearAuxAudio();
 
-                // Close modal immediately and show live status bar on main screen
                 document.getElementById('instantKeyModal').classList.remove('show');
 
                 const patchedChunks = patchHev1ToHvc1InChunks(rawChunks);
+                const rawMediaBlob = new Blob(patchedChunks);
                 const expectVideo = !isAudioOnlyExt(ext);
                 const candidateMimes = getCandidateMimes(ext, firstChunkBytes);
 
-                // Step 1: Test native playback directly on the real #vlockVideoPlayer (~0.3s)
+                // Step 1: Test native playback directly on the real #vlockVideoPlayer (~0.5s)
                 setStatus("Starting Native Video Player...", true);
                 for (const mime of candidateMimes) {
-                  const testBlob = mime ? new Blob(patchedChunks, { type: mime }) : new Blob(patchedChunks);
-                  const ok = await tryPlayOnRealVideoPlayer(videoEl, testBlob, expectVideo, 1400);
+                  const testBlob = mime ? new Blob(patchedChunks, { type: mime }) : rawMediaBlob;
+                  const ok = await tryPlayOnRealVideoPlayer(videoEl, testBlob, expectVideo, 1500);
                   if (ok) {
                     videoEl.muted = false;
                     videoEl.controls = true;
@@ -1530,112 +1762,85 @@ jobs:
                   }
                 }
 
-                // Step 2: 1-Second Pure Stream-Copy Remux (-c:v copy -c:a copy -strict -2 -tag:v hvc1)
+                // Step 2: Load FFmpeg Engine & inspect stream codecs (50ms)
                 await ensureFfmpegLoaded((msg) => setStatus(msg, true));
 
-                setStatus("Remuxing Container to Native MP4 (1–2s)...", true);
                 const stamp = Date.now();
                 const inName = `in_${stamp}${ext || '.mkv'}`;
-                const outBothName = `out_both_${stamp}.mp4`;
-                const outVidOnlyName = `out_vid_${stamp}.mp4`;
-
-                const fullUint8 = new Uint8Array(await new Blob(patchedChunks).arrayBuffer());
+                const fullUint8 = new Uint8Array(await rawMediaBlob.arrayBuffer());
                 await ffmpegInstance.writeFile(inName, fullUint8);
 
-                // Pass A: Pure stream copy of both video & audio (with hvc1 tag for HEVC) — takes ~1.2 seconds!
-                let remuxedOk = false;
+                ffmpegLastLogs = [];
                 try {
-                  let ret = await ffmpegInstance.exec([
-                    "-i", inName,
-                    "-map", "0:v:0",
-                    "-map", "0:a:0?",
-                    "-c:v", "copy",
-                    "-c:a", "copy",
-                    "-strict", "-2",
-                    "-tag:v", "hvc1",
-                    "-movflags", "+faststart",
-                    outBothName
-                  ]);
-
-                  if (ret !== 0) {
-                    // Retry without -tag:v hvc1 if video codec is H.264/VP9/AV1
-                    ret = await ffmpegInstance.exec([
-                      "-i", inName,
-                      "-map", "0:v:0",
-                      "-map", "0:a:0?",
-                      "-c:v", "copy",
-                      "-c:a", "copy",
-                      "-strict", "-2",
-                      "-movflags", "+faststart",
-                      outBothName
-                    ]);
-                  }
-
-                  if (ret === 0) {
-                    const dataBoth = await ffmpegInstance.readFile(outBothName);
-                    await ffmpegInstance.deleteFile(outBothName).catch(() => {});
-                    if (dataBoth && dataBoth.byteLength > 1024) {
-                      const mp4Blob = new Blob([dataBoth.buffer], { type: 'video/mp4' });
-                      remuxedOk = await tryPlayOnRealVideoPlayer(videoEl, mp4Blob, expectVideo, 2000);
-                    }
-                  }
+                  await ffmpegInstance.exec(["-i", inName]);
                 } catch (e) {}
+                const probeInfo = parseFfmpegProbeLogs(ffmpegLastLogs.join('\n'));
 
-                if (remuxedOk) {
-                  await ffmpegInstance.deleteFile(inName).catch(() => {});
-                  videoEl.muted = false;
-                  videoEl.controls = true;
-                  setStatus("", false);
-                  videoEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                  await videoEl.play().catch(() => {});
-                  return;
-                }
+                const isHevc = probeInfo.videoCodec === 'hevc' || probeInfo.videoCodec === 'h265';
+                const is10BitH264 = probeInfo.videoCodec === 'h264' && probeInfo.is10Bit;
 
-                // Pass B: If audio codec in .mkv (e.g. Vorbis/EAC3) blocked MP4 muxing, copy video-only in 1s + sync native audio
-                try {
-                  let retV = await ffmpegInstance.exec([
-                    "-i", inName,
-                    "-map", "0:v:0",
-                    "-c:v", "copy",
-                    "-tag:v", "hvc1",
-                    "-an",
-                    "-movflags", "+faststart",
-                    outVidOnlyName
-                  ]);
-                  if (retV !== 0) {
-                    retV = await ffmpegInstance.exec([
-                      "-i", inName,
-                      "-map", "0:v:0",
-                      "-c:v", "copy",
-                      "-an",
-                      "-movflags", "+faststart",
-                      outVidOnlyName
-                    ]);
-                  }
-                  await ffmpegInstance.deleteFile(inName).catch(() => {});
+                // Step 3: 1-Second Pure Stream-Copy Remux (unless video is 10-bit H.264 Hi10P)
+                if (!is10BitH264) {
+                  setStatus("Remuxing Container to Native MP4 (1s)...", true);
+                  const outBothName = `out_both_${stamp}.mp4`;
+                  const outVidOnlyName = `out_vid_${stamp}.mp4`;
 
-                  if (retV === 0) {
-                    const dataVid = await ffmpegInstance.readFile(outVidOnlyName);
-                    await ffmpegInstance.deleteFile(outVidOnlyName).catch(() => {});
-                    if (dataVid && dataVid.byteLength > 1024) {
-                      const vidOnlyBlob = new Blob([dataVid.buffer], { type: 'video/mp4' });
-                      const vidOk = await tryPlayOnRealVideoPlayer(videoEl, vidOnlyBlob, expectVideo, 2000);
-                      if (vidOk) {
-                        bindAuxAudioSync(videoEl, new Blob(patchedChunks));
-                        videoEl.muted = false;
-                        videoEl.controls = true;
-                        setStatus("", false);
-                        videoEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                        await videoEl.play().catch(() => {});
-                        return;
+                  // Pass A: Copy both video & audio (only add -tag:v hvc1 if stream is actually HEVC!)
+                  try {
+                    const argsA = ["-i", inName, "-map", "0:v:0", "-map", "0:a:0?", "-c:v", "copy", "-c:a", "copy", "-strict", "-2"];
+                    if (isHevc) argsA.push("-tag:v", "hvc1");
+                    argsA.push("-movflags", "+faststart", outBothName);
+
+                    const retA = await ffmpegInstance.exec(argsA);
+                    if (retA === 0) {
+                      const dataBoth = await ffmpegInstance.readFile(outBothName);
+                      await ffmpegInstance.deleteFile(outBothName).catch(() => {});
+                      if (dataBoth && dataBoth.byteLength > 1024) {
+                        const mp4Blob = new Blob([dataBoth.buffer], { type: 'video/mp4' });
+                        const okA = await tryPlayOnRealVideoPlayer(videoEl, mp4Blob, expectVideo, 1800);
+                        if (okA) {
+                          await ffmpegInstance.deleteFile(inName).catch(() => {});
+                          videoEl.muted = false;
+                          videoEl.controls = true;
+                          setStatus("", false);
+                          videoEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                          await videoEl.play().catch(() => {});
+                          return;
+                        }
                       }
                     }
-                  }
-                } catch (e) {
-                  await ffmpegInstance.deleteFile(inName).catch(() => {});
+                  } catch (e) {}
+
+                  // Pass B: Video-only stream copy + native audio sync
+                  try {
+                    const argsB = ["-i", inName, "-map", "0:v:0", "-c:v", "copy", "-an"];
+                    if (isHevc) argsB.push("-tag:v", "hvc1");
+                    argsB.push("-movflags", "+faststart", outVidOnlyName);
+
+                    const retB = await ffmpegInstance.exec(argsB);
+                    if (retB === 0) {
+                      const dataVid = await ffmpegInstance.readFile(outVidOnlyName);
+                      await ffmpegInstance.deleteFile(outVidOnlyName).catch(() => {});
+                      if (dataVid && dataVid.byteLength > 1024) {
+                        const vidBlob = new Blob([dataVid.buffer], { type: 'video/mp4' });
+                        const okB = await tryPlayOnRealVideoPlayer(videoEl, vidBlob, expectVideo, 1800);
+                        if (okB) {
+                          await ffmpegInstance.deleteFile(inName).catch(() => {});
+                          bindAuxAudioSync(videoEl, rawMediaBlob);
+                          videoEl.muted = false;
+                          videoEl.controls = true;
+                          setStatus("", false);
+                          videoEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                          await videoEl.play().catch(() => {});
+                          return;
+                        }
+                      }
+                    }
+                  } catch (e) {}
                 }
 
-                throw new Error("This device's hardware video decoder does not support the video codec in this file.");
+                // Step 4: Fast Continuous Software Video Streamer (for 10-bit H.264 / unsupported HEVC)
+                await startFastContinuousMsePlayback(inName, rawMediaBlob, probeInfo, setStatus);
               }
 
               async function handleDecryptAndWatch() {
@@ -1657,14 +1862,23 @@ jobs:
                 const statusBar = document.getElementById('playerStatusBar');
 
                 const setStatus = (txt, active) => {
-                  btn.disabled = active;
-                  btn.textContent = active ? txt : "▶ Decrypt & Watch / Unlock";
-                  if (modalBtn) {
-                    modalBtn.disabled = active;
-                    modalBtn.textContent = active ? txt : "▶ Decrypt & Watch Now";
+                  if (active && txt && !txt.startsWith("🟢")) {
+                    btn.disabled = true;
+                    btn.textContent = txt;
+                    if (modalBtn) {
+                      modalBtn.disabled = true;
+                      modalBtn.textContent = txt;
+                    }
+                  } else {
+                    btn.disabled = false;
+                    btn.textContent = "▶ Decrypt & Watch / Unlock";
+                    if (modalBtn) {
+                      modalBtn.disabled = false;
+                      modalBtn.textContent = "▶ Decrypt & Watch Now";
+                    }
                   }
                   if (active && txt) {
-                    statusBar.textContent = "⏳ " + txt;
+                    statusBar.textContent = txt;
                     statusBar.classList.add('show');
                   } else {
                     statusBar.classList.remove('show');
@@ -1832,6 +2046,7 @@ jobs:
                   }
 
                   if (slotStatus === 2) {
+                    setStatus("", false);
                     document.getElementById('instantKeyModal').classList.remove('show');
                     const outName = `${(activeFileBlob.name || 'Video').replace(/\.(html|htm|vlock)$/i, '')}_Unlocked${ext}`;
                     await saveBlobToDisk(new Blob(blobParts, { type: 'application/octet-stream' }), outName);
@@ -1845,9 +2060,15 @@ jobs:
                   burnedKeys[keyHex] = Date.now();
                   localStorage.setItem(BURNED_KEYS_STORAGE, JSON.stringify(burnedKeys));
                 } catch (err) {
+                  setStatus("", false);
                   alert("Decryption/Playback Error: " + formatError(err));
                 } finally {
-                  setStatus("", false);
+                  btn.disabled = false;
+                  btn.textContent = "▶ Decrypt & Watch / Unlock";
+                  if (modalBtn) {
+                    modalBtn.disabled = false;
+                    modalBtn.textContent = "▶ Decrypt & Watch Now";
+                  }
                 }
               }
 
@@ -2129,7 +2350,7 @@ jobs:
                 document.getElementById('menuCopyright').addEventListener('click', () => {
                   document.getElementById('infoModalTitle').textContent = "Copyright & Legal Notice";
                   document.getElementById('infoModalBody').textContent =
-                    "VLock Media Security Suite v3.5\n© 2026 VLock Studio. All Rights Reserved.\n\n" +
+                    "VLock Media Security Suite v3.6\n© 2026 VLock Studio. All Rights Reserved.\n\n" +
                     "This software and its cryptographic stream architecture are protected by copyright law and international treaties. " +
                     "Unauthorized reproduction, reverse engineering, or tampering may result in severe civil and criminal penalties.\n\n" +
                     "For any issue contact @Modrat_editor using Telegram.";
