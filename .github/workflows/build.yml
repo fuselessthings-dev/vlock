@@ -112,7 +112,7 @@ jobs:
             <meta http-equiv="Pragma" content="no-cache" />
             <meta http-equiv="Expires" content="0" />
             <meta name="theme-color" content="#161b22" />
-            <title>VLock v3.2 — User Decryption & Admin Encryption</title>
+            <title>VLock v3.3 — User Decryption & Admin Encryption</title>
             <style>
               :root {
                 --bg-dark: #0d1117;
@@ -227,8 +227,7 @@ jobs:
               }
               .player-wrap.active { display: block; }
               #vlockVideoPlayer {
-                display: block; width: 100%; height: auto; aspect-ratio: 16 / 9;
-                min-height: 360px; max-height: 80vh; background: #000000;
+                display: block; width: 100%; max-height: 80vh; background: #000000; border-radius: 8px;
               }
 
               .progress-bar { width: 100%; height: 10px; background: #140507; border-radius: 5px; overflow: hidden; border: 1px solid #42141b; }
@@ -316,7 +315,7 @@ jobs:
             <!-- TOP BAR -->
             <div class="topbar">
               <div class="brand">
-                <h1>VLock v3.2</h1>
+                <h1>VLock v3.3</h1>
                 <span>User Decryption & Admin Encryption</span>
               </div>
               <div class="top-actions">
@@ -709,7 +708,8 @@ jobs:
               const ZK_PUB_X_B64U = "__ZK_PUB_X_B64U__";
               const ZK_PUB_Y_B64U = "__ZK_PUB_Y_B64U__";
               const SLOT_SIZE = 48;
-              const DB_NAME = "vlock_verified_db_v32";
+              const DB_NAME = "vlock_verified_db_v33";
+              const BURNED_KEYS_STORAGE = "vlock_burned_keys_v33";
 
               const CODE_TO_SECONDS = { "1D": 86400, "1W": 7 * 86400, "1M": 30 * 86400, "1Y": 365 * 86400, "LT": -1 };
               const CODE_TO_LABEL = { "1D": "1 Day", "1W": "1 Week", "1M": "1 Month", "1Y": "1 Year", "LT": "Lifetime" };
@@ -724,7 +724,6 @@ jobs:
               let autoPlayPendingAfterPick = false;
               let ffmpegInstance = null;
 
-              // Clean up old Service Workers and old unverified IndexedDB databases immediately
               if ('serviceWorker' in navigator) {
                 navigator.serviceWorker.getRegistrations().then((regs) => {
                   for (const reg of regs) reg.unregister();
@@ -831,26 +830,24 @@ jobs:
                     bytes[i + 2] === 0x43 &&
                     bytes[i + 3] === 0x4B
                   ) {
-                    const ver = (bytes[i + 4] << 8) | bytes[i + 5];
+                    const ver = (bytes[i + 4] << 8) | probeVerSafe(bytes, i);
                     if (ver === 1 || ver === 2) return i;
                   }
                 }
                 return -1;
               }
 
+              function probeVerSafe(bytes, i) {
+                return bytes[i + 5];
+              }
+
               function isRawMediaSignature(bytes, filename) {
                 if (bytes && bytes.length >= 12) {
-                  // MP4 / MOV 'ftyp' at offset 4
                   if (bytes[4] === 0x66 && bytes[5] === 0x74 && bytes[6] === 0x79 && bytes[7] === 0x70) return true;
-                  // MKV / WebM EBML (1A 45 DF A3)
                   if (bytes[0] === 0x1A && bytes[1] === 0x45 && bytes[2] === 0xDF && bytes[3] === 0xA3) return true;
-                  // AVI / WAV 'RIFF'
                   if (bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46) return true;
-                  // Ogg 'OggS'
                   if (bytes[0] === 0x4F && bytes[1] === 0x67 && bytes[2] === 0x67 && bytes[3] === 0x53) return true;
-                  // FLAC 'fLaC'
                   if (bytes[0] === 0x66 && bytes[1] === 0x4C && bytes[2] === 0x61 && bytes[3] === 0x43) return true;
-                  // MP3 'ID3' or frame sync
                   if (bytes[0] === 0x49 && bytes[1] === 0x44 && bytes[2] === 0x33) return true;
                 }
                 const extMatch = (filename || '').toLowerCase().match(/\.(mp4|mkv|webm|mov|avi|m4v|ts|mp3|flac|wav|aac|ogg|m4a)$/);
@@ -935,7 +932,6 @@ jobs:
               async function onVlockFilePicked(file, showPopup = true) {
                 if (!file) return;
 
-                // Check if user accidentally picked bot_keys.txt
                 if (file.size < 512 * 1024 && /\.txt$/i.test(file.name)) {
                   try {
                     const txt = await file.text();
@@ -1231,7 +1227,7 @@ jobs:
               }
 
               // =========================================================================
-              // UNIVERSAL VIDEO DECODER PROBE & SAME-ORIGIN FFMPEG WASM ENGINE
+              // DIRECT VISIBLE PLAYER ENGINE & INSTANT LOSSLESS MP4 REMUX FALLBACK
               // =========================================================================
               function isAudioOnlyExt(ext) {
                 const e = (ext || '').toLowerCase();
@@ -1261,7 +1257,7 @@ jobs:
                 return ['video/mp4', ''];
               }
 
-              // Patches 'hev1' fourCC to 'hvc1' in MP4 headers so hardware HEVC decoders work immediately
+              // Patch 'hev1' fourCC to 'hvc1' in MP4 headers so hardware HEVC decoders work immediately
               function patchHev1ToHvc1InChunks(chunks) {
                 return chunks.map((buf, idx) => {
                   if (idx !== 0 && idx !== chunks.length - 1) return buf;
@@ -1280,206 +1276,201 @@ jobs:
                 });
               }
 
-              function probeCanDecodeRealVideoFrames(blob, expectVideoTrack, timeoutMs = 2500) {
+              // Loads a Blob directly into the VISIBLE #vlockVideoPlayer and checks videoWidth > 0
+              function tryLoadOnVisiblePlayer(videoEl, blob, expectVideoTrack, timeoutMs = 2500) {
                 return new Promise((resolve) => {
-                  const probeVideo = document.createElement('video');
-                  probeVideo.muted = true;
-                  probeVideo.playsInline = true;
-                  probeVideo.preload = 'auto';
-                  probeVideo.style.position = 'fixed';
-                  probeVideo.style.bottom = '4px';
-                  probeVideo.style.right = '4px';
-                  probeVideo.style.width = '4px';
-                  probeVideo.style.height = '4px';
-                  probeVideo.style.opacity = '0.01';
-                  probeVideo.style.pointerEvents = 'none';
-                  probeVideo.style.zIndex = '-1';
-                  document.body.appendChild(probeVideo);
-
+                  if (currentObjectUrl) {
+                    URL.revokeObjectURL(currentObjectUrl);
+                    currentObjectUrl = null;
+                  }
                   const url = URL.createObjectURL(blob);
-                  let done = false;
-
-                  const hasDecodedFrames = () => {
-                    if (probeVideo.error) return false;
-                    if (!expectVideoTrack) return probeVideo.readyState >= 2;
-                    if (probeVideo.videoWidth <= 0 || probeVideo.videoHeight <= 0) return false;
-                    if (typeof probeVideo.getVideoPlaybackQuality === 'function') {
-                      const q = probeVideo.getVideoPlaybackQuality();
-                      if (q && q.totalVideoFrames > 0) return true;
-                    }
-                    if (typeof probeVideo.webkitDecodedFrameCount === 'number') {
-                      if (probeVideo.webkitDecodedFrameCount > 0) return true;
-                    }
-                    return probeVideo.readyState >= 2 && probeVideo.currentTime > 0;
-                  };
+                  currentObjectUrl = url;
+                  let settled = false;
 
                   const finish = (ok) => {
-                    if (done) return;
-                    done = true;
-                    clearInterval(pollTimer);
+                    if (settled) return;
+                    settled = true;
                     clearTimeout(maxTimer);
-                    try {
-                      probeVideo.pause();
-                      probeVideo.removeAttribute('src');
-                      probeVideo.load();
-                      probeVideo.remove();
-                    } catch (e) {}
-                    URL.revokeObjectURL(url);
+                    videoEl.onloadedmetadata = null;
+                    videoEl.onloadeddata = null;
+                    videoEl.oncanplay = null;
+                    videoEl.onerror = null;
                     resolve(ok);
                   };
 
-                  const pollTimer = setInterval(() => {
-                    if (probeVideo.error) {
+                  const checkReady = () => {
+                    if (videoEl.error) {
                       finish(false);
-                    } else if (hasDecodedFrames()) {
-                      finish(true);
-                    }
-                  }, 60);
-
-                  const maxTimer = setTimeout(() => {
-                    finish(hasDecodedFrames());
-                  }, timeoutMs);
-
-                  probeVideo.onerror = () => finish(false);
-                  probeVideo.onloadeddata = () => {
-                    if (hasDecodedFrames()) {
-                      finish(true);
                       return;
                     }
-                    probeVideo.play().catch(() => {
-                      try { probeVideo.currentTime = 0.05; } catch (e) {}
-                    });
+                    if (!expectVideoTrack) {
+                      if (videoEl.readyState >= 1) finish(true);
+                      return;
+                    }
+                    if (videoEl.videoWidth > 0 && videoEl.videoHeight > 0) {
+                      finish(true);
+                    }
                   };
 
-                  probeVideo.src = url;
-                  probeVideo.load();
+                  const maxTimer = setTimeout(() => {
+                    if (videoEl.error) finish(false);
+                    else if (!expectVideoTrack) finish(videoEl.readyState >= 1);
+                    else finish(videoEl.videoWidth > 0 && videoEl.videoHeight > 0);
+                  }, timeoutMs);
+
+                  videoEl.onerror = () => finish(false);
+                  videoEl.onloadeddata = checkReady;
+                  videoEl.oncanplay = checkReady;
+                  videoEl.onloadedmetadata = () => {
+                    if (videoEl.error) {
+                      finish(false);
+                      return;
+                    }
+                    if (!expectVideoTrack || (videoEl.videoWidth > 0 && videoEl.videoHeight > 0)) {
+                      // Wait 250ms to make sure frame 1 does not trigger a decode error
+                      setTimeout(() => {
+                        if (!settled) {
+                          if (videoEl.error) finish(false);
+                          else if (!expectVideoTrack) finish(true);
+                          else finish(videoEl.videoWidth > 0 && videoEl.videoHeight > 0);
+                        }
+                      }, 250);
+                    } else {
+                      // Metadata loaded with videoWidth === 0 (audio-only track loaded, video rejected)
+                      setTimeout(() => {
+                        if (!settled) {
+                          finish(!videoEl.error && videoEl.videoWidth > 0 && videoEl.videoHeight > 0);
+                        }
+                      }, 300);
+                    }
+                  };
+
+                  videoEl.src = url;
+                  videoEl.load();
                 });
               }
 
-              async function convertToUniversalPlayableMp4(blobParts, ext, expectVideo, statusCallback) {
-                statusCallback("Loading Universal Video Engine...");
-
+              async function ensureFfmpegLoaded(statusCallback) {
                 if (!window.FFmpegWASM || !window.FFmpegWASM.FFmpeg) {
                   throw new Error("FFmpeg engine script not loaded.");
                 }
-
                 if (!ffmpegInstance) {
+                  statusCallback("Loading Container Remux Engine...");
                   const { FFmpeg } = window.FFmpegWASM;
                   ffmpegInstance = new FFmpeg();
-                  ffmpegInstance.on('progress', ({ progress }) => {
-                    const pct = Math.min(99, Math.max(1, Math.round((progress || 0) * 100)));
-                    statusCallback(`Converting video for native playback... ${pct}%`);
-                  });
-
                   const coreUrl = new URL('./ffmpeg-core.js', window.location.href).href;
                   const wasmUrl = new URL('./ffmpeg-core.wasm', window.location.href).href;
-
                   await ffmpegInstance.load({
                     coreURL: coreUrl,
                     wasmURL: wasmUrl
                   });
                 }
+              }
+
+              async function remuxToPlayableMp4OnVisiblePlayer(videoEl, rawChunks, ext, expectVideo, statusCallback) {
+                await ensureFfmpegLoaded(statusCallback);
 
                 const inName = "input" + (ext || ".mkv");
-                const remuxName = "remux.mp4";
-                const transcodeName = "universal.mp4";
+                const outCopyName = "remux_copy.mp4";
+                const outAacName = "remux_aac.mp4";
 
-                const fullUint8 = new Uint8Array(await new Blob(blobParts).arrayBuffer());
+                const fullUint8 = new Uint8Array(await new Blob(rawChunks).arrayBuffer());
                 await ffmpegInstance.writeFile(inName, fullUint8);
 
-                // Stage A: Fast lossless container remux into MP4
-                statusCallback("Remuxing container to native MP4...");
+                // Pass 1: Instant lossless stream copy (-c:v copy -c:a copy) — finishes 157 MB in ~1-2 seconds!
+                statusCallback("Remuxing container to native MP4 (Lossless)...");
                 try {
                   const ret1 = await ffmpegInstance.exec([
                     "-i", inName,
                     "-map", "0:v:0",
                     "-map", "0:a:0?",
                     "-c:v", "copy",
-                    "-c:a", "aac",
-                    "-b:a", "128k",
+                    "-c:a", "copy",
                     "-movflags", "+faststart",
-                    remuxName
+                    outCopyName
                   ]);
-
                   if (ret1 === 0) {
-                    const data1 = await ffmpegInstance.readFile(remuxName);
-                    await ffmpegInstance.deleteFile(remuxName).catch(() => {});
+                    const data1 = await ffmpegInstance.readFile(outCopyName);
+                    await ffmpegInstance.deleteFile(outCopyName).catch(() => {});
                     if (data1 && data1.byteLength > 1024) {
-                      const patchedBuf = patchHev1ToHvc1InChunks([data1.buffer]);
-                      const remuxBlob = new Blob(patchedBuf, { type: 'video/mp4' });
-                      const canDecodeRemux = await probeCanDecodeRealVideoFrames(remuxBlob, expectVideo, 2200);
-                      if (canDecodeRemux) {
+                      const patched1 = patchHev1ToHvc1InChunks([data1.buffer]);
+                      const blob1 = new Blob(patched1, { type: 'video/mp4' });
+                      const ok1 = await tryLoadOnVisiblePlayer(videoEl, blob1, expectVideo, 2500);
+                      if (ok1) {
                         await ffmpegInstance.deleteFile(inName).catch(() => {});
-                        return remuxBlob;
+                        return true;
                       }
                     }
                   }
                 } catch (e) {}
 
-                // Stage B: Full Universal 8-bit H.264 (yuv420p) + AAC transcode (fixes HEVC / H.265 / 10-bit Hi10P)
-                statusCallback("Converting codec to Universal H.264 MP4...");
-                const ret2 = await ffmpegInstance.exec([
-                  "-i", inName,
-                  "-map", "0:v:0",
-                  "-map", "0:a:0?",
-                  "-c:v", "libx264",
-                  "-preset", "ultrafast",
-                  "-crf", "23",
-                  "-pix_fmt", "yuv420p",
-                  "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
-                  "-c:a", "aac",
-                  "-ac", "2",
-                  "-b:a", "128k",
-                  "-movflags", "+faststart",
-                  transcodeName
-                ]);
+                // Pass 2: Lossless video copy + fast AAC audio (only if audio was Opus/Vorbis/AC3)
+                ffmpegInstance.on('progress', ({ progress }) => {
+                  const pct = Math.min(99, Math.max(1, Math.round((progress || 0) * 100)));
+                  statusCallback(`Optimizing audio track for MP4... ${pct}%`);
+                });
 
-                await ffmpegInstance.deleteFile(inName).catch(() => {});
-
-                if (ret2 === 0) {
-                  const data2 = await ffmpegInstance.readFile(transcodeName);
-                  await ffmpegInstance.deleteFile(transcodeName).catch(() => {});
-                  if (data2 && data2.byteLength > 1024) {
-                    return new Blob([data2.buffer], { type: 'video/mp4' });
+                try {
+                  const ret2 = await ffmpegInstance.exec([
+                    "-i", inName,
+                    "-map", "0:v:0",
+                    "-map", "0:a:0?",
+                    "-c:v", "copy",
+                    "-c:a", "aac",
+                    "-ac", "2",
+                    "-b:a", "128k",
+                    "-movflags", "+faststart",
+                    outAacName
+                  ]);
+                  await ffmpegInstance.deleteFile(inName).catch(() => {});
+                  if (ret2 === 0) {
+                    const data2 = await ffmpegInstance.readFile(outAacName);
+                    await ffmpegInstance.deleteFile(outAacName).catch(() => {});
+                    if (data2 && data2.byteLength > 1024) {
+                      const patched2 = patchHev1ToHvc1InChunks([data2.buffer]);
+                      const blob2 = new Blob(patched2, { type: 'video/mp4' });
+                      const ok2 = await tryLoadOnVisiblePlayer(videoEl, blob2, expectVideo, 2500);
+                      if (ok2) return true;
+                    }
                   }
+                } catch (e) {
+                  await ffmpegInstance.deleteFile(inName).catch(() => {});
                 }
-                throw new Error("Could not convert video stream.");
+
+                return false;
               }
 
               async function playMediaChunksInNativePlayer(rawChunks, ext, firstChunkBytes, setBtnsText) {
-                setBtnsText("Verifying Native Video Decoder...", true);
+                const videoEl = document.getElementById('vlockVideoPlayer');
+                videoEl.pause();
+
+                // Show #playerWrap and close modal FIRST so #vlockVideoPlayer is 100% visible in the viewport
+                document.getElementById('playerWrap').classList.add('active');
+                document.getElementById('instantKeyModal').classList.remove('show');
 
                 const patchedChunks = patchHev1ToHvc1InChunks(rawChunks);
                 const expectVideo = !isAudioOnlyExt(ext);
                 const candidateMimes = getCandidateMimes(ext, firstChunkBytes);
-                let playableBlob = null;
+                let loadedOk = false;
 
+                // Step 1: Try loading directly into the visible native <video> player (takes ~150ms)
                 for (const mime of candidateMimes) {
                   const testBlob = mime ? new Blob(patchedChunks, { type: mime }) : new Blob(patchedChunks);
-                  const ok = await probeCanDecodeRealVideoFrames(testBlob, expectVideo, 2200);
-                  if (ok) {
-                    playableBlob = testBlob;
-                    break;
-                  }
+                  loadedOk = await tryLoadOnVisiblePlayer(videoEl, testBlob, expectVideo, 2000);
+                  if (loadedOk) break;
                 }
 
-                if (!playableBlob) {
-                  playableBlob = await convertToUniversalPlayableMp4(patchedChunks, ext, expectVideo, (msg) => setBtnsText(msg, true));
+                // Step 2: Only if native demuxer failed (e.g. .mkv container with videoWidth === 0), remux to MP4
+                if (!loadedOk && expectVideo) {
+                  loadedOk = await remuxToPlayableMp4OnVisiblePlayer(
+                    videoEl,
+                    patchedChunks,
+                    ext,
+                    expectVideo,
+                    (msg) => setBtnsText(msg, true)
+                  );
                 }
 
-                const videoEl = document.getElementById('vlockVideoPlayer');
-                videoEl.pause();
-                if (currentObjectUrl) {
-                  URL.revokeObjectURL(currentObjectUrl);
-                  currentObjectUrl = null;
-                }
-
-                currentObjectUrl = URL.createObjectURL(playableBlob);
-                document.getElementById('playerWrap').classList.add('active');
-                document.getElementById('instantKeyModal').classList.remove('show');
-
-                videoEl.src = currentObjectUrl;
-                videoEl.load();
                 videoEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
                 await videoEl.play().catch(() => {});
               }
@@ -1536,7 +1527,6 @@ jobs:
 
                   let vlockStart = scanBytesForVlockOffset(probeBytes);
 
-                  // Check if file is Base64-encoded VLock ("VkxDSwA")
                   let activeFileBlob = selectedVlockFile;
                   if (vlockStart === -1 && selectedVlockFile.size < 250 * 1024 * 1024) {
                     const previewAscii = new TextDecoder('ascii', { fatal: false }).decode(probeBytes.slice(0, Math.min(probeBytes.length, 65536)));
@@ -1557,7 +1547,6 @@ jobs:
                   }
 
                   if (vlockStart === -1) {
-                    // 1. If this came from an old IndexedDB cache, discard it and open the file picker
                     if (selectedFileFromCache) {
                       selectedVlockFile = null;
                       selectedFileFromCache = false;
@@ -1567,7 +1556,6 @@ jobs:
                       return;
                     }
 
-                    // 2. If the user selected an already unencrypted video/audio file (.mp4/.mkv/.webm/etc.), play it directly!
                     if (isRawMediaSignature(probeBytes, selectedVlockFile.name)) {
                       const dotIdx = (selectedVlockFile.name || '').lastIndexOf('.');
                       const rawExt = dotIdx >= 0 ? selectedVlockFile.name.slice(dotIdx).toLowerCase() : '.mp4';
@@ -1634,7 +1622,7 @@ jobs:
                   }
 
                   const keyHex = bytesToHex(targetKeyId);
-                  const burnedKeys = JSON.parse(localStorage.getItem('vlock_burned_keys') || '{}');
+                  const burnedKeys = JSON.parse(localStorage.getItem(BURNED_KEYS_STORAGE) || '{}');
                   if (slotStatus === 0 || (slotStatus === 1 && burnedKeys[keyHex])) {
                     throw new Error("Previous key expired! Please enter a new key from the Telegram Bot to watch again.");
                   }
@@ -1684,7 +1672,7 @@ jobs:
 
                   // Burn temporary key after playable stream is ready
                   burnedKeys[keyHex] = Date.now();
-                  localStorage.setItem('vlock_burned_keys', JSON.stringify(burnedKeys));
+                  localStorage.setItem(BURNED_KEYS_STORAGE, JSON.stringify(burnedKeys));
                 } catch (err) {
                   alert("Decryption/Playback Error: " + formatError(err));
                 } finally {
@@ -1834,7 +1822,6 @@ jobs:
                   hDv.setUint32(62, totalSlots, false);
 
                   const cryptoKey = await crypto.subtle.importKey('raw', masterKey, 'AES-CTR', false, ['encrypt']);
-                  // Flat ArrayBuffer/Uint8Array array so IndexedDB never corrupts nested Blobs
                   const rawBufferParts = [stubBytes, headerFixed, slotsBuffer];
 
                   const chunkSize = 16 * 1024 * 1024;
@@ -1864,7 +1851,6 @@ jobs:
 
                   await saveVideoToIndexedDb(outFileName, finalBlob);
 
-                  // Download encrypted Video.html FIRST so browser never blocks it
                   await saveBlobToDisk(finalBlob, outFileName);
                   setTimeout(() => {
                     saveBlobToDisk(new Blob([lastGeneratedKeysContent], { type: 'text/plain;charset=utf-8' }), 'bot_keys.txt');
@@ -1973,7 +1959,7 @@ jobs:
                 document.getElementById('menuCopyright').addEventListener('click', () => {
                   document.getElementById('infoModalTitle').textContent = "Copyright & Legal Notice";
                   document.getElementById('infoModalBody').textContent =
-                    "VLock Media Security Suite v3.2\n© 2026 VLock Studio. All Rights Reserved.\n\n" +
+                    "VLock Media Security Suite v3.3\n© 2026 VLock Studio. All Rights Reserved.\n\n" +
                     "This software and its cryptographic stream architecture are protected by copyright law and international treaties. " +
                     "Unauthorized reproduction, reverse engineering, or tampering may result in severe civil and criminal penalties.\n\n" +
                     "For any issue contact @Modrat_editor using Telegram.";
