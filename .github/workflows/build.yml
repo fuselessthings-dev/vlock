@@ -33,7 +33,7 @@ jobs:
           pip install cryptography>=42.0.0
           mkdir -p dist_web
 
-          # Bundle single-threaded FFmpeg WebAssembly engine directly in dist_web (100% same-origin, zero pthread deadlock)
+          # Bundle single-threaded FFmpeg WebAssembly engine directly in dist_web (100% same-origin)
           curl -fL -sS "https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js" -o dist_web/ffmpeg.js
           curl -fL -sS "https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/umd/814.ffmpeg.js" -o dist_web/814.ffmpeg.js
           curl -fL -sS "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.js" -o dist_web/ffmpeg-core.js
@@ -105,7 +105,7 @@ jobs:
             <meta charset="UTF-8" />
             <meta name="viewport" content="width=device-width, initial-scale=1.0" />
             <meta name="theme-color" content="#161b22" />
-            <title>VLock v3.9 — User Decryption & Admin Encryption</title>
+            <title>VLock v4.0 — User Decryption & Admin Encryption</title>
             <style>
               :root {
                 --bg-dark: #0d1117;
@@ -316,7 +316,7 @@ jobs:
             <!-- TOP BAR -->
             <div class="topbar">
               <div class="brand">
-                <h1>VLock v3.9</h1>
+                <h1>VLock v4.0</h1>
                 <span>User Decryption & Admin Encryption</span>
               </div>
               <div class="top-actions">
@@ -711,9 +711,9 @@ jobs:
               const ZK_PUB_X_B64U = "__ZK_PUB_X_B64U__";
               const ZK_PUB_Y_B64U = "__ZK_PUB_Y_B64U__";
               const SLOT_SIZE = 48;
-              const DB_NAME = "vlock_verified_db_v39";
-              const ENGINE_DB_NAME = "vlock_engine_cache_v39";
-              const BURNED_KEYS_STORAGE = "vlock_burned_keys_v39";
+              const DB_NAME = "vlock_verified_db_v40";
+              const ENGINE_DB_NAME = "vlock_engine_cache_v40";
+              const BURNED_KEYS_STORAGE = "vlock_burned_keys_v40";
 
               const CODE_TO_SECONDS = { "1D": 86400, "1W": 7 * 86400, "1M": 30 * 86400, "1Y": 365 * 86400, "LT": -1 };
               const CODE_TO_LABEL = { "1D": "1 Day", "1W": "1 Week", "1M": "1 Month", "1Y": "1 Year", "LT": "Lifetime" };
@@ -732,7 +732,6 @@ jobs:
               let activeStreamJobId = 0;
               let gapWatchdogInterval = null;
 
-              // Unregister any old Service Workers so COOP/COEP or old stream handlers never interfere
               if ('serviceWorker' in navigator) {
                 navigator.serviceWorker.getRegistrations().then((regs) => {
                   for (const reg of regs) reg.unregister();
@@ -1467,8 +1466,8 @@ jobs:
                 if (ffmpegInstance) return;
 
                 statusCallback("Loading Video Engine...");
-                const coreBuf = await fetchAssetWithProgress('./ffmpeg-core.js', 'core_st_js_v39', 50000);
-                const wasmBuf = await fetchAssetWithProgress('./ffmpeg-core.wasm', 'core_st_wasm_v39', 10000000, (pct) => {
+                const coreBuf = await fetchAssetWithProgress('./ffmpeg-core.js', 'core_st_js_v40', 50000);
+                const wasmBuf = await fetchAssetWithProgress('./ffmpeg-core.wasm', 'core_st_wasm_v40', 10000000, (pct) => {
                   statusCallback(`Downloading Video Engine (One-Time)... ${pct}%`);
                 });
 
@@ -1515,7 +1514,7 @@ jobs:
               }
 
               // =========================================================================
-              // KEYFRAME-SPLIT + VIDEO-ONLY MSE STREAMER (NO 6S/10S STOP, 2S SEEK)
+              // KEYFRAME-SPLIT + VIDEO-ONLY MSE STREAMER (NO 6S/10S STOP, 1.5S SEEK)
               // =========================================================================
               async function startKeyframeSplitMseStream(inName, rawMediaBlob, probeInfo, setStatus) {
                 const jobId = ++activeStreamJobId;
@@ -1580,7 +1579,6 @@ jobs:
                 if (segments.length > 0) {
                   await ffmpegInstance.deleteFile(inName).catch(() => {});
                 } else {
-                  // Fallback virtual segment table if container couldn't be pre-split
                   const totalDur = probeInfo.durationSec > 0 ? probeInfo.durationSec : 1440;
                   const count = Math.max(1, Math.ceil(totalDur / 5));
                   for (let i = 0; i < count; i++) {
@@ -1599,21 +1597,19 @@ jobs:
                 let lastAppendedSegIdx = -999;
                 let seekDebounceTimer = null;
 
-                // Encodes a single pre-split keyframe file (video-only, skips non-ref B-frames & loop filter -> ~1.5s!)
+                // Encodes a single pre-split keyframe file with automatic fallback if fast flags fail
                 const encodeVideoSegment = async (segObj) => {
                   const outFile = `vo_${jobId}_${segObj.idx}.mp4`;
-                  const args = [
+                  const inputArgs = segObj.file
+                    ? ["-i", segObj.file]
+                    : ["-noaccurate_seek", "-ss", String(segObj.start), "-i", inName, "-t", String(segObj.dur + 0.1)];
+
+                  // Tier 1: Ultra-fast decode (skips loop filter & non-reference B-frames) + separated -sws_flags neighbor
+                  const fastArgs = [
                     "-y",
-                    "-flags2", "fast",
                     "-skip_loop_filter", "all",
-                    "-skip_frame", "nonref"
-                  ];
-                  if (segObj.file) {
-                    args.push("-i", segObj.file);
-                  } else {
-                    args.push("-noaccurate_seek", "-ss", String(segObj.start), "-t", String(segObj.dur + 0.1), "-i", inName);
-                  }
-                  args.push(
+                    "-skip_frame", "nonref",
+                    ...inputArgs,
                     "-map", "0:v:0",
                     "-an",
                     "-c:v", "libx264",
@@ -1623,30 +1619,71 @@ jobs:
                     "-level", "3.0",
                     "-crf", "28",
                     "-pix_fmt", "yuv420p",
-                    "-vf", "fps=15,scale=480:270:flags=neighbor,format=yuv420p",
+                    "-vf", "fps=15,scale=480:270,format=yuv420p",
+                    "-sws_flags", "neighbor",
                     "-g", "30",
                     "-keyint_min", "15",
                     "-sc_threshold", "0",
-                    "-x264-params", "me=dia:subme=0:trellis=0:aq-mode=0:deblock=0:weightp=0:cabac=0:bframes=0:ref=1:scenecut=0:partitions=none",
                     "-f", "mp4",
                     "-movflags", "frag_keyframe+empty_moov+default_base_moof",
                     outFile
-                  );
+                  ];
 
-                  const ret = await ffmpegInstance.exec(args);
-                  if (ret !== 0) {
-                    await ffmpegInstance.deleteFile(outFile).catch(() => {});
-                    return null;
+                  let ret = await ffmpegInstance.exec(fastArgs);
+                  if (ret === 0) {
+                    try {
+                      const data = await ffmpegInstance.readFile(outFile);
+                      await ffmpegInstance.deleteFile(outFile).catch(() => {});
+                      if (data && data.byteLength > 256) {
+                        if (segObj.file) await ffmpegInstance.deleteFile(segObj.file).catch(() => {});
+                        return data;
+                      }
+                    } catch (e) {}
                   }
-                  const data = await ffmpegInstance.readFile(outFile);
                   await ffmpegInstance.deleteFile(outFile).catch(() => {});
-                  return data && data.byteLength > 256 ? data : null;
+
+                  // Tier 2 Fallback: Standard decode args (guaranteed compatibility on all streams)
+                  const safeArgs = [
+                    "-y",
+                    ...inputArgs,
+                    "-map", "0:v:0",
+                    "-an",
+                    "-c:v", "libx264",
+                    "-preset", "ultrafast",
+                    "-tune", "zerolatency",
+                    "-profile:v", "baseline",
+                    "-level", "3.0",
+                    "-crf", "28",
+                    "-pix_fmt", "yuv420p",
+                    "-vf", "scale=480:270,format=yuv420p",
+                    "-r", "15",
+                    "-g", "30",
+                    "-f", "mp4",
+                    "-movflags", "frag_keyframe+empty_moov+default_base_moof",
+                    outFile
+                  ];
+
+                  ret = await ffmpegInstance.exec(safeArgs);
+                  if (ret === 0) {
+                    try {
+                      const data = await ffmpegInstance.readFile(outFile);
+                      await ffmpegInstance.deleteFile(outFile).catch(() => {});
+                      if (data && data.byteLength > 256) {
+                        if (segObj.file) await ffmpegInstance.deleteFile(segObj.file).catch(() => {});
+                        return data;
+                      }
+                    } catch (e) {}
+                  }
+                  await ffmpegInstance.deleteFile(outFile).catch(() => {});
+                  return null;
                 };
 
                 setStatus("⚡ Starting Video Stream (0:00)...", true);
+                ffmpegLastLogs = [];
                 const seg0Data = await encodeVideoSegment(segments[0]);
                 if (!seg0Data) {
-                  throw new Error("Could not initialize video stream.");
+                  const errTail = ffmpegLastLogs.slice(-4).join(" | ");
+                  throw new Error("Could not initialize video stream: " + (errTail || "encoder error"));
                 }
                 encodedSet.add(0);
 
@@ -2399,7 +2436,7 @@ jobs:
                 document.getElementById('menuCopyright').addEventListener('click', () => {
                   document.getElementById('infoModalTitle').textContent = "Copyright & Legal Notice";
                   document.getElementById('infoModalBody').textContent =
-                    "VLock Media Security Suite v3.9\n© 2026 VLock Studio. All Rights Reserved.\n\n" +
+                    "VLock Media Security Suite v4.0\n© 2026 VLock Studio. All Rights Reserved.\n\n" +
                     "This software and its cryptographic stream architecture are protected by copyright law and international treaties. " +
                     "Unauthorized reproduction, reverse engineering, or tampering may result in severe civil and criminal penalties.\n\n" +
                     "For any issue contact @Modrat_editor using Telegram.";
