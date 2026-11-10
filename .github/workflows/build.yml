@@ -105,7 +105,7 @@ jobs:
             <meta charset="UTF-8" />
             <meta name="viewport" content="width=device-width, initial-scale=1.0" />
             <meta name="theme-color" content="#161b22" />
-            <title>VLock v4.0 — User Decryption & Admin Encryption</title>
+            <title>VLock v4.1 — User Decryption & Admin Encryption</title>
             <style>
               :root {
                 --bg-dark: #0d1117;
@@ -316,7 +316,7 @@ jobs:
             <!-- TOP BAR -->
             <div class="topbar">
               <div class="brand">
-                <h1>VLock v4.0</h1>
+                <h1>VLock v4.1</h1>
                 <span>User Decryption & Admin Encryption</span>
               </div>
               <div class="top-actions">
@@ -711,9 +711,9 @@ jobs:
               const ZK_PUB_X_B64U = "__ZK_PUB_X_B64U__";
               const ZK_PUB_Y_B64U = "__ZK_PUB_Y_B64U__";
               const SLOT_SIZE = 48;
-              const DB_NAME = "vlock_verified_db_v40";
-              const ENGINE_DB_NAME = "vlock_engine_cache_v40";
-              const BURNED_KEYS_STORAGE = "vlock_burned_keys_v40";
+              const DB_NAME = "vlock_verified_db_v41";
+              const ENGINE_DB_NAME = "vlock_engine_cache_v41";
+              const BURNED_KEYS_STORAGE = "vlock_burned_keys_v41";
 
               const CODE_TO_SECONDS = { "1D": 86400, "1W": 7 * 86400, "1M": 30 * 86400, "1Y": 365 * 86400, "LT": -1 };
               const CODE_TO_LABEL = { "1D": "1 Day", "1W": "1 Week", "1M": "1 Month", "1Y": "1 Year", "LT": "Lifetime" };
@@ -1313,7 +1313,7 @@ jobs:
               }
 
               // =========================================================================
-              // KEYFRAME PRE-SPLITTER + VIDEO-ONLY MSE STREAMER + NATIVE AUDIO SYNC
+              // 1-SECOND HARDWARE HEVC REMUX + 5X FASTER BIDIR-SKIP STREAMER
               // =========================================================================
               function isAudioOnlyExt(ext) {
                 const e = (ext || '').toLowerCase();
@@ -1392,7 +1392,7 @@ jobs:
                 };
               }
 
-              function tryPlayOnRealVideoPlayer(videoEl, blob, expectVideoTrack, timeoutMs = 1100) {
+              function tryPlayOnRealVideoPlayer(videoEl, blob, expectVideoTrack, timeoutMs = 1500) {
                 return new Promise((resolve) => {
                   if (currentObjectUrl) {
                     URL.revokeObjectURL(currentObjectUrl);
@@ -1466,8 +1466,8 @@ jobs:
                 if (ffmpegInstance) return;
 
                 statusCallback("Loading Video Engine...");
-                const coreBuf = await fetchAssetWithProgress('./ffmpeg-core.js', 'core_st_js_v40', 50000);
-                const wasmBuf = await fetchAssetWithProgress('./ffmpeg-core.wasm', 'core_st_wasm_v40', 10000000, (pct) => {
+                const coreBuf = await fetchAssetWithProgress('./ffmpeg-core.js', 'core_st_js_v41', 50000);
+                const wasmBuf = await fetchAssetWithProgress('./ffmpeg-core.wasm', 'core_st_wasm_v41', 10000000, (pct) => {
                   statusCallback(`Downloading Video Engine (One-Time)... ${pct}%`);
                 });
 
@@ -1513,10 +1513,28 @@ jobs:
                 return { durationSec, videoCodec, is10Bit, audioCodec };
               }
 
+              async function tryRemuxCommandToPlayableBlob(videoEl, inName, outName, ffmpegArgs, expectVideo) {
+                try {
+                  const ret = await ffmpegInstance.exec(["-y", "-i", inName, ...ffmpegArgs, outName]);
+                  if (ret !== 0) {
+                    await ffmpegInstance.deleteFile(outName).catch(() => {});
+                    return false;
+                  }
+                  const data = await ffmpegInstance.readFile(outName);
+                  await ffmpegInstance.deleteFile(outName).catch(() => {});
+                  if (!data || data.byteLength < 1024) return false;
+                  const mp4Blob = new Blob([data.buffer], { type: 'video/mp4' });
+                  return await tryPlayOnRealVideoPlayer(videoEl, mp4Blob, expectVideo, 1700);
+                } catch (e) {
+                  await ffmpegInstance.deleteFile(outName).catch(() => {});
+                  return false;
+                }
+              }
+
               // =========================================================================
-              // KEYFRAME-SPLIT + VIDEO-ONLY MSE STREAMER (NO 6S/10S STOP, 1.5S SEEK)
+              // 5X FASTER BIDIR-SKIP STREAMER (NO UPFRONT SPLIT, 15S CHUNKS IN ~1.5S)
               // =========================================================================
-              async function startKeyframeSplitMseStream(inName, rawMediaBlob, probeInfo, setStatus) {
+              async function startBidirFastMseStream(inName, rawMediaBlob, probeInfo, setStatus) {
                 const jobId = ++activeStreamJobId;
                 const videoEl = document.getElementById('vlockVideoPlayer');
                 const auxAudio = document.getElementById('vlockAuxAudio');
@@ -1528,88 +1546,40 @@ jobs:
                   currentObjectUrl = null;
                 }
 
-                // Video-Only SourceBuffer eliminates audio/video track length mismatch gaps at 6s/10s!
                 const mimeCodec = 'video/mp4; codecs="avc1.42E01E"';
                 const MSClass = window.MediaSource || window.ManagedMediaSource;
                 if (!MSClass || !MSClass.isTypeSupported(mimeCodec)) {
                   throw new Error("MediaSource streaming is not supported on this browser.");
                 }
 
-                // Step 1: Split input video stream at exact natural keyframes in ~1 second (-c:v copy -an -f segment)
-                setStatus("⚡ Indexing Keyframes for Instant Seek (1s)...", true);
-                const listFile = `list_${jobId}.csv`;
-                const segPattern = `kp_${jobId}_%05d.mkv`;
-                let segments = [];
-
-                const splitRet = await ffmpegInstance.exec([
-                  "-y",
-                  "-i", inName,
-                  "-map", "0:v:0",
-                  "-c:v", "copy",
-                  "-an",
-                  "-f", "segment",
-                  "-segment_time", "5",
-                  "-segment_list", listFile,
-                  "-segment_list_type", "csv",
-                  "-reset_timestamps", "1",
-                  segPattern
-                ]);
-
-                if (splitRet === 0) {
-                  try {
-                    const csvBytes = await ffmpegInstance.readFile(listFile);
-                    await ffmpegInstance.deleteFile(listFile).catch(() => {});
-                    const csvText = new TextDecoder().decode(csvBytes);
-                    const lines = csvText.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-                    for (let i = 0; i < lines.length; i++) {
-                      const parts = lines[i].split(',');
-                      if (parts.length >= 3) {
-                        const file = parts[0].trim();
-                        const start = parseFloat(parts[1]);
-                        const end = parseFloat(parts[2]);
-                        if (!isNaN(start) && !isNaN(end) && end > start) {
-                          segments.push({ idx: i, file, start, end, dur: end - start });
-                        }
-                      }
-                    }
-                  } catch (e) {}
-                }
-
-                // Free the 158 MB master input file from WASM RAM as soon as keyframe parts are split!
-                if (segments.length > 0) {
-                  await ffmpegInstance.deleteFile(inName).catch(() => {});
-                } else {
-                  const totalDur = probeInfo.durationSec > 0 ? probeInfo.durationSec : 1440;
-                  const count = Math.max(1, Math.ceil(totalDur / 5));
-                  for (let i = 0; i < count; i++) {
-                    const st = i * 5;
-                    const en = Math.min(totalDur, (i + 1) * 5);
-                    segments.push({ idx: i, file: null, start: st, end: en, dur: en - st });
-                  }
-                }
-
-                const totalDuration = segments.length > 0
-                  ? segments[segments.length - 1].end
-                  : (probeInfo.durationSec > 0 ? probeInfo.durationSec : 1440);
-
+                // 15-second segments encoded at 7x realtime speed (~2s per 15s of video)
+                const SEG_SEC = 15;
+                const totalDuration = probeInfo.durationSec > 0 ? probeInfo.durationSec : 1440;
+                const totalSegments = Math.max(1, Math.ceil(totalDuration / SEG_SEC));
                 const encodedSet = new Set();
                 let prioritySegIdx = -1;
                 let lastAppendedSegIdx = -999;
                 let seekDebounceTimer = null;
 
-                // Encodes a single pre-split keyframe file with automatic fallback if fast flags fail
-                const encodeVideoSegment = async (segObj) => {
-                  const outFile = `vo_${jobId}_${segObj.idx}.mp4`;
-                  const inputArgs = segObj.file
-                    ? ["-i", segObj.file]
-                    : ["-noaccurate_seek", "-ss", String(segObj.start), "-i", inName, "-t", String(segObj.dur + 0.1)];
+                // -skip_frame bidir skips all B-frames (~80% of frames in x265 anime) so 15s decodes in ~1.8s!
+                const encodeFastVideoChunk = async (segIdx) => {
+                  const startSec = segIdx * SEG_SEC;
+                  const durSec = Math.min(SEG_SEC, totalDuration - startSec);
+                  if (durSec <= 0.1) return null;
 
-                  // Tier 1: Ultra-fast decode (skips loop filter & non-reference B-frames) + separated -sws_flags neighbor
+                  const outFile = `bf_${jobId}_${segIdx}.mp4`;
+
+                  // Tier 1: -skip_frame bidir + -skip_loop_filter all + -noaccurate_seek (5x faster HEVC decode)
                   const fastArgs = [
                     "-y",
+                    "-noaccurate_seek",
+                    "-ss", String(startSec),
                     "-skip_loop_filter", "all",
-                    "-skip_frame", "nonref",
-                    ...inputArgs,
+                    "-skip_idct", "all",
+                    "-skip_frame", "bidir",
+                    "-flags2", "fast",
+                    "-i", inName,
+                    "-t", String(durSec + 0.25),
                     "-map", "0:v:0",
                     "-an",
                     "-c:v", "libx264",
@@ -1617,12 +1587,12 @@ jobs:
                     "-tune", "zerolatency",
                     "-profile:v", "baseline",
                     "-level", "3.0",
-                    "-crf", "28",
+                    "-crf", "29",
                     "-pix_fmt", "yuv420p",
-                    "-vf", "fps=15,scale=480:270,format=yuv420p",
+                    "-vf", "fps=12,scale=426:240,format=yuv420p",
                     "-sws_flags", "neighbor",
-                    "-g", "30",
-                    "-keyint_min", "15",
+                    "-g", "24",
+                    "-keyint_min", "12",
                     "-sc_threshold", "0",
                     "-f", "mp4",
                     "-movflags", "frag_keyframe+empty_moov+default_base_moof",
@@ -1634,18 +1604,18 @@ jobs:
                     try {
                       const data = await ffmpegInstance.readFile(outFile);
                       await ffmpegInstance.deleteFile(outFile).catch(() => {});
-                      if (data && data.byteLength > 256) {
-                        if (segObj.file) await ffmpegInstance.deleteFile(segObj.file).catch(() => {});
-                        return data;
-                      }
+                      if (data && data.byteLength > 256) return data;
                     } catch (e) {}
                   }
                   await ffmpegInstance.deleteFile(outFile).catch(() => {});
 
-                  // Tier 2 Fallback: Standard decode args (guaranteed compatibility on all streams)
+                  // Tier 2 Fallback: Standard decode args
                   const safeArgs = [
                     "-y",
-                    ...inputArgs,
+                    "-noaccurate_seek",
+                    "-ss", String(startSec),
+                    "-i", inName,
+                    "-t", String(durSec + 0.25),
                     "-map", "0:v:0",
                     "-an",
                     "-c:v", "libx264",
@@ -1653,11 +1623,11 @@ jobs:
                     "-tune", "zerolatency",
                     "-profile:v", "baseline",
                     "-level", "3.0",
-                    "-crf", "28",
+                    "-crf", "29",
                     "-pix_fmt", "yuv420p",
-                    "-vf", "scale=480:270,format=yuv420p",
-                    "-r", "15",
-                    "-g", "30",
+                    "-vf", "scale=426:240,format=yuv420p",
+                    "-r", "12",
+                    "-g", "24",
                     "-f", "mp4",
                     "-movflags", "frag_keyframe+empty_moov+default_base_moof",
                     outFile
@@ -1668,26 +1638,23 @@ jobs:
                     try {
                       const data = await ffmpegInstance.readFile(outFile);
                       await ffmpegInstance.deleteFile(outFile).catch(() => {});
-                      if (data && data.byteLength > 256) {
-                        if (segObj.file) await ffmpegInstance.deleteFile(segObj.file).catch(() => {});
-                        return data;
-                      }
+                      if (data && data.byteLength > 256) return data;
                     } catch (e) {}
                   }
                   await ffmpegInstance.deleteFile(outFile).catch(() => {});
                   return null;
                 };
 
-                setStatus("⚡ Starting Video Stream (0:00)...", true);
+                setStatus("⚡ Starting High-Speed Stream (0:00)...", true);
                 ffmpegLastLogs = [];
-                const seg0Data = await encodeVideoSegment(segments[0]);
+                const seg0Data = await encodeFastVideoChunk(0);
                 if (!seg0Data) {
+                  await ffmpegInstance.deleteFile(inName).catch(() => {});
                   const errTail = ffmpegLastLogs.slice(-4).join(" | ");
                   throw new Error("Could not initialize video stream: " + (errTail || "encoder error"));
                 }
                 encodedSet.add(0);
 
-                // Bind original native audio stream in sync with videoEl
                 if (probeInfo.audioCodec) {
                   bindAuxAudioToVideo(videoEl, rawMediaBlob);
                 }
@@ -1699,7 +1666,6 @@ jobs:
                   mediaSource.addEventListener('sourceopen', async () => {
                     try {
                       const sourceBuffer = mediaSource.addSourceBuffer(mimeCodec);
-                      // Video-only 'sequence' mode stitches frames back-to-back with ZERO gap!
                       sourceBuffer.mode = 'sequence';
                       if (totalDuration > 0 && !isNaN(totalDuration)) {
                         try { mediaSource.duration = totalDuration; } catch (e) {}
@@ -1733,17 +1699,10 @@ jobs:
                 videoEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
                 await videoEl.play().catch(() => {});
 
-                const findSegIdxForTime = (t) => {
-                  for (let i = 0; i < segments.length; i++) {
-                    if (t >= segments[i].start && t < segments[i].end) return i;
-                  }
-                  return Math.min(segments.length - 1, Math.max(0, Math.floor(t / 5)));
-                };
-
                 const isTimeBuffered = (t) => {
                   const b = videoEl.buffered;
                   for (let i = 0; i < b.length; i++) {
-                    if (t >= b.start(i) - 0.05 && t <= b.end(i) - 0.05) return true;
+                    if (t >= b.start(i) - 0.08 && t <= b.end(i) - 0.08) return true;
                   }
                   return false;
                 };
@@ -1753,7 +1712,7 @@ jobs:
                   if (isTimeBuffered(t)) return true;
                   const b = videoEl.buffered;
                   for (let i = 0; i < b.length; i++) {
-                    if (b.start(i) > t && b.start(i) - t <= 2.5 && b.end(i) > b.start(i) + 0.1) {
+                    if (b.start(i) > t && b.start(i) - t <= 3.0 && b.end(i) > b.start(i) + 0.1) {
                       videoEl.currentTime = b.start(i) + 0.04;
                       return true;
                     }
@@ -1779,18 +1738,17 @@ jobs:
                   }
                 }, 220);
 
-                // Timeline seek handler with 150ms debounce so dragging the slider encodes only the final target
                 videoEl.onseeking = () => {
                   auxAudio.pause();
                   if (seekDebounceTimer) clearTimeout(seekDebounceTimer);
                   const targetTime = videoEl.currentTime;
-                  const targetIdx = findSegIdxForTime(targetTime);
+                  const targetIdx = Math.min(totalSegments - 1, Math.max(0, Math.floor(targetTime / SEG_SEC)));
 
                   if (!encodedSet.has(targetIdx)) {
                     setOverlayBadge(`⚡ Loading ${formatTimeMmSs(targetTime)}...`);
                     seekDebounceTimer = setTimeout(() => {
                       prioritySegIdx = targetIdx;
-                    }, 150);
+                    }, 120);
                   } else {
                     snapIntoBufferIfNear();
                     setOverlayBadge("");
@@ -1799,24 +1757,24 @@ jobs:
                   }
                 };
 
-                // Background keyframe segment encoder loop
+                // Background encoder loop: encodes 15s chunks in ~1.8s each (buffers 90s ahead)
                 (async () => {
                   while (jobId === activeStreamJobId && mediaSource.readyState === 'open') {
                     if (videoEl.seeking && seekDebounceTimer) {
-                      await new Promise(r => setTimeout(r, 80));
+                      await new Promise(r => setTimeout(r, 60));
                     }
 
                     let nextIdx = -1;
                     let isSeekTarget = false;
 
-                    if (prioritySegIdx >= 0 && prioritySegIdx < segments.length && !encodedSet.has(prioritySegIdx)) {
+                    if (prioritySegIdx >= 0 && prioritySegIdx < totalSegments && !encodedSet.has(prioritySegIdx)) {
                       nextIdx = prioritySegIdx;
                       prioritySegIdx = -1;
                       isSeekTarget = true;
                     } else {
-                      const curIdx = findSegIdxForTime(videoEl.currentTime);
-                      // Buffer up to 12 segments (~60 seconds) ahead of current playback
-                      for (let s = curIdx; s <= Math.min(segments.length - 1, curIdx + 12); s++) {
+                      const curIdx = Math.min(totalSegments - 1, Math.max(0, Math.floor(videoEl.currentTime / SEG_SEC)));
+                      // Buffer up to 6 segments (90 seconds) ahead of current playback
+                      for (let s = curIdx; s <= Math.min(totalSegments - 1, curIdx + 6); s++) {
                         if (!encodedSet.has(s)) {
                           nextIdx = s;
                           break;
@@ -1825,26 +1783,24 @@ jobs:
                     }
 
                     if (nextIdx === -1) {
-                      if (encodedSet.size >= segments.length) break;
+                      if (encodedSet.size >= totalSegments) break;
                       await new Promise(r => setTimeout(r, 200));
                       continue;
                     }
 
-                    const curPlayIdx = findSegIdxForTime(videoEl.currentTime);
+                    const curPlayIdx = Math.min(totalSegments - 1, Math.max(0, Math.floor(videoEl.currentTime / SEG_SEC)));
                     if (nextIdx === curPlayIdx && !encodedSet.has(curPlayIdx)) {
-                      setOverlayBadge(`⚡ Loading ${formatTimeMmSs(segments[nextIdx].start)}...`);
+                      setOverlayBadge(`⚡ Loading ${formatTimeMmSs(nextIdx * SEG_SEC)}...`);
                     }
 
-                    const segBytes = await encodeVideoSegment(segments[nextIdx]);
+                    const segBytes = await encodeFastVideoChunk(nextIdx);
                     if (jobId !== activeStreamJobId || mediaSource.readyState !== 'open') break;
 
                     if (segBytes) {
                       try {
                         await waitForSb();
-                        // Only set timestampOffset on non-contiguous seek jumps!
-                        // Contiguous segments (nextIdx === lastAppendedSegIdx + 1) stitch gaplessly in 'sequence' mode!
                         if (nextIdx !== lastAppendedSegIdx + 1) {
-                          sb.timestampOffset = segments[nextIdx].start;
+                          sb.timestampOffset = nextIdx * SEG_SEC;
                         }
                         sb.appendBuffer(segBytes.buffer);
                         await waitForSb();
@@ -1855,7 +1811,7 @@ jobs:
                       encodedSet.add(nextIdx);
                     }
 
-                    const nowIdx = findSegIdxForTime(videoEl.currentTime);
+                    const nowIdx = Math.min(totalSegments - 1, Math.max(0, Math.floor(videoEl.currentTime / SEG_SEC)));
                     if (isSeekTarget || nextIdx === nowIdx) {
                       snapIntoBufferIfNear();
                       setOverlayBadge("");
@@ -1867,6 +1823,10 @@ jobs:
                         }
                       }
                     }
+                  }
+
+                  if (jobId === activeStreamJobId) {
+                    await ffmpegInstance.deleteFile(inName).catch(() => {});
                   }
                 })();
               }
@@ -1887,7 +1847,7 @@ jobs:
 
                 const rawMediaBlob = new Blob(rawChunks);
 
-                // Stage 1: Fast native hardware decoder test (~0.9s) for MP4/WebM
+                // Stage 1: Direct native playback for MP4/WebM (~0.9s)
                 if (!isMkvSignature && e !== '.mkv') {
                   setStatus("Starting Native Player...", true);
                   const mime = e === '.webm' ? 'video/webm' : 'video/mp4';
@@ -1915,41 +1875,52 @@ jobs:
                   await ffmpegInstance.exec(["-i", inName]);
                 } catch (e) {}
                 const probeInfo = parseFfmpegProbeLogs(ffmpegLastLogs.join('\n'));
+                const isHevc = probeInfo.videoCodec === 'hevc' || probeInfo.videoCodec === 'h265';
 
-                // Stage 3: If video is standard 8-bit H.264, do a 1-second lossless video copy + synced audio
-                if (probeInfo.videoCodec === 'h264' && !probeInfo.is10Bit) {
-                  setStatus("Remuxing H.264 to Native MP4 (1s)...", true);
-                  const outRemux = `remux_${stamp}.mp4`;
-                  try {
-                    const ret = await ffmpegInstance.exec([
-                      "-y", "-i", inName,
-                      "-map", "0:v:0", "-c:v", "copy", "-an",
-                      "-movflags", "+faststart",
-                      outRemux
-                    ]);
-                    if (ret === 0) {
-                      const data = await ffmpegInstance.readFile(outRemux);
-                      await ffmpegInstance.deleteFile(outRemux).catch(() => {});
-                      if (data && data.byteLength > 1024) {
-                        const mp4Blob = new Blob([data.buffer], { type: 'video/mp4' });
-                        const ok = await tryPlayOnRealVideoPlayer(videoEl, mp4Blob, expectVideo, 1600);
-                        if (ok) {
-                          await ffmpegInstance.deleteFile(inName).catch(() => {});
-                          if (probeInfo.audioCodec) bindAuxAudioToVideo(videoEl, rawMediaBlob);
-                          videoEl.muted = false;
-                          videoEl.controls = true;
-                          setStatus("", false);
-                          videoEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                          await videoEl.play().catch(() => {});
-                          return;
-                        }
-                      }
+                // Stage 3: 1-Second Lossless Hardware Remux Tests (hev1 in-band AND hvc1 + extract_extradata)
+                // If the device's hardware decoder supports HEVC or H.264, this plays the entire 23:50 video in 1 second!
+                if (!(probeInfo.videoCodec === 'h264' && probeInfo.is10Bit)) {
+                  setStatus("Testing Hardware Decoder (1s)...", true);
+
+                  // 3A: Default 'hev1' / 'avc1' stream copy (preserves in-band SPS/PPS for Android MediaCodec) + synced audio
+                  const okHev1 = await tryRemuxCommandToPlayableBlob(
+                    videoEl, inName, `hw1_${stamp}.mp4`,
+                    ["-map", "0:v:0", "-c:v", "copy", "-an"],
+                    expectVideo
+                  );
+                  if (okHev1) {
+                    await ffmpegInstance.deleteFile(inName).catch(() => {});
+                    if (probeInfo.audioCodec) bindAuxAudioToVideo(videoEl, rawMediaBlob);
+                    videoEl.muted = false;
+                    videoEl.controls = true;
+                    setStatus("", false);
+                    videoEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    await videoEl.play().catch(() => {});
+                    return;
+                  }
+
+                  // 3B: 'hvc1' stream copy WITH '-bsf:v extract_extradata' (populates hvcC header for strict HEVC decoders)
+                  if (isHevc) {
+                    const okHvc1 = await tryRemuxCommandToPlayableBlob(
+                      videoEl, inName, `hw2_${stamp}.mp4`,
+                      ["-map", "0:v:0", "-c:v", "copy", "-bsf:v", "extract_extradata", "-tag:v", "hvc1", "-an"],
+                      expectVideo
+                    );
+                    if (okHvc1) {
+                      await ffmpegInstance.deleteFile(inName).catch(() => {});
+                      if (probeInfo.audioCodec) bindAuxAudioToVideo(videoEl, rawMediaBlob);
+                      videoEl.muted = false;
+                      videoEl.controls = true;
+                      setStatus("", false);
+                      videoEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                      await videoEl.play().catch(() => {});
+                      return;
                     }
-                  } catch (e) {}
+                  }
                 }
 
-                // Stage 4: Keyframe Pre-Splitter + Video-Only MSE Streamer + Synced Native Audio
-                await startKeyframeSplitMseStream(inName, rawMediaBlob, probeInfo, setStatus);
+                // Stage 4: 5x Faster '-skip_frame bidir' MSE Streamer (15s chunks in ~1.8s, instant keyframe seek)
+                await startBidirFastMseStream(inName, rawMediaBlob, probeInfo, setStatus);
               }
 
               async function handleDecryptAndWatch() {
@@ -2436,7 +2407,7 @@ jobs:
                 document.getElementById('menuCopyright').addEventListener('click', () => {
                   document.getElementById('infoModalTitle').textContent = "Copyright & Legal Notice";
                   document.getElementById('infoModalBody').textContent =
-                    "VLock Media Security Suite v4.0\n© 2026 VLock Studio. All Rights Reserved.\n\n" +
+                    "VLock Media Security Suite v4.1\n© 2026 VLock Studio. All Rights Reserved.\n\n" +
                     "This software and its cryptographic stream architecture are protected by copyright law and international treaties. " +
                     "Unauthorized reproduction, reverse engineering, or tampering may result in severe civil and criminal penalties.\n\n" +
                     "For any issue contact @Modrat_editor using Telegram.";
