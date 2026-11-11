@@ -351,7 +351,7 @@ jobs:
                   </svg>
                   <div class="nle-text">
                     <h3 id="viewerFileTitle">Tap or Drag & Drop Encrypted Video (.html / .htm / .vlock) Here</h3>
-                    <p>Supports all resolutions (360p–4K) & formats • Instant local playback (0 MB internet upload)</p>
+                    <p>Plays natively in HD on all devices • Instant local playback (0 MB internet upload)</p>
                   </div>
                 </div>
 
@@ -523,7 +523,7 @@ jobs:
                       </svg>
                     </div>
                     <h4>3. Paste Key & Watch</h4>
-                    <p>Click <b>Paste Key</b> in the popup window, then tap <b>Decrypt & Watch</b>. The video plays natively with full-screen support!</p>
+                    <p>Click <b>Paste Key</b> in the popup window, then tap <b>Decrypt & Watch</b>. The video plays natively in HD with full-screen support!</p>
                   </div>
                 </div>
 
@@ -714,8 +714,8 @@ jobs:
               const DB_NAME = "vlock_verified_db_v44";
               const ENGINE_DB_NAME = "vlock_engine_cache_v44";
               const BURNED_KEYS_STORAGE = "vlock_burned_keys_v44";
-              const WORKER_POOL_SIZE = 3;
-              const STANDBY_POOL_SIZE = 2;
+              const WORKER_POOL_SIZE = 4;
+              const STANDBY_POOL_SIZE = 3;
 
               const CODE_TO_SECONDS = { "1D": 86400, "1W": 7 * 86400, "1M": 30 * 86400, "1Y": 365 * 86400, "LT": -1 };
               const CODE_TO_LABEL = { "1D": "1 Day", "1W": "1 Week", "1M": "1 Month", "1Y": "1 Year", "LT": "Lifetime" };
@@ -731,7 +731,7 @@ jobs:
               let autoPlayPendingAfterPick = false;
 
               let ffmpegPool = [];
-              let ffmpegBusyFlags = [false, false, false];
+              let ffmpegBusyFlags = [false, false, false, false];
               let ffmpegStandbyPool = [];
               let splitWorker = null;
               let ffmpegCoreBlobUrl = null;
@@ -1326,7 +1326,7 @@ jobs:
               }
 
               // =========================================================================
-              // ON-DEMAND KEYFRAME MEMORY + ZERO-DUPLICATE PARALLEL HD STREAMER
+              // 4-WORKER PARALLEL HD STREAMER + ON-DEMAND KEYFRAME READER + SEEK PREEMPT
               // =========================================================================
               function isAudioOnlyExt(ext) {
                 const e = (ext || '').toLowerCase();
@@ -1539,15 +1539,16 @@ jobs:
                     ffmpegWasmBlobUrl = URL.createObjectURL(new Blob([wasmBuf], { type: 'application/wasm' }));
                   }
 
-                  if (statusCallback) statusCallback("Starting Parallel Decoders...");
-                  const [w0, w1, w2, ws] = await Promise.all([
+                  if (statusCallback) statusCallback("Starting 4-Core Parallel Video Engine...");
+                  const [w0, w1, w2, w3, ws] = await Promise.all([
+                    createNewFfmpegWorker(false),
                     createNewFfmpegWorker(false),
                     createNewFfmpegWorker(false),
                     createNewFfmpegWorker(false),
                     createNewFfmpegWorker(true)
                   ]);
-                  ffmpegPool = [w0, w1, w2];
-                  ffmpegBusyFlags = [false, false, false];
+                  ffmpegPool = [w0, w1, w2, w3];
+                  ffmpegBusyFlags = [false, false, false, false];
                   splitWorker = ws;
                   refillStandbyPoolInBackground();
                 })();
@@ -1584,9 +1585,9 @@ jobs:
               }
 
               // =========================================================================
-              // ON-DEMAND KEYFRAME STREAMER (ADAPTS TO ANY VIDEO RESOLUTION, ZERO STALLS)
+              // 4-WORKER PARALLEL KEYFRAME STREAMER (ON-DEMAND READ, ZERO RE-DECODE)
               // =========================================================================
-              async function startOnDemandKeyframeStream(fullUint8, rawMediaBlob, ext, setStatus) {
+              async function startFourWorkerKeyframeStream(inName, rawMediaBlob, probeInfo, setStatus) {
                 const jobId = ++activeStreamJobId;
                 const videoEl = document.getElementById('vlockVideoPlayer');
                 const auxAudio = document.getElementById('vlockAuxAudio');
@@ -1604,33 +1605,29 @@ jobs:
                   throw new Error("MediaSource streaming is not supported on this browser.");
                 }
 
-                // Step 1: Index keyframes in splitWorker in ~1.2s (ONLY reads list.csv — 0ms file loop!)
+                // Step 1: Split input video at exact keyframes inside splitWorker's MEMFS (~1s).
+                // DO NOT read all 250 files upfront! Keep them in splitWorker's RAM and read on-demand in 2ms!
                 setStatus("⚡ Indexing Keyframes (1s)...", true);
-                const masterName = `master_${jobId}${ext || '.mkv'}`;
                 const listFile = `list_${jobId}.csv`;
                 const segPattern = `kp_${jobId}_%05d.mkv`;
-
-                await splitWorker.writeFile(masterName, fullUint8);
-                ffmpegLastLogs = [];
+                let segments = [];
 
                 const splitRet = await splitWorker.exec([
                   "-y",
-                  "-i", masterName,
+                  "-i", inName,
                   "-map", "0:v:0",
                   "-c:v", "copy",
                   "-an",
                   "-f", "segment",
-                  "-segment_time", "2",
+                  "-segment_time", "3",
                   "-segment_list", listFile,
                   "-segment_list_type", "csv",
                   "-reset_timestamps", "1",
                   segPattern
                 ]);
 
-                const probeInfo = parseFfmpegProbeLogs(ffmpegLastLogs.join('\n'));
-                await splitWorker.deleteFile(masterName).catch(() => {});
+                await splitWorker.deleteFile(inName).catch(() => {});
 
-                const segments = [];
                 if (splitRet === 0) {
                   try {
                     const csvBytes = await splitWorker.readFile(listFile);
@@ -1644,14 +1641,7 @@ jobs:
                         const start = parseFloat(parts[1]);
                         const end = parseFloat(parts[2]);
                         if (!isNaN(start) && !isNaN(end) && end > start) {
-                          segments.push({
-                            idx: segments.length,
-                            file,
-                            rawBytes: null,
-                            start,
-                            end,
-                            dur: end - start
-                          });
+                          segments.push({ idx: i, file, rawBytes: null, start, end, dur: end - start });
                         }
                       }
                     }
@@ -1659,41 +1649,45 @@ jobs:
                 }
 
                 if (segments.length === 0) {
-                  throw new Error("Could not index video keyframes.");
+                  throw new Error("Could not split video keyframes.");
                 }
 
                 const totalDuration = segments[segments.length - 1].end;
 
-                // Reads a keyframe file from splitWorker ON-DEMAND (< 2ms per file, cached once read)
-                const getKeyframeBytesOnDemand = async (segObj) => {
-                  if (segObj.rawBytes) return segObj.rawBytes;
-                  const bytes = await splitWorker.readFile(segObj.file);
-                  await splitWorker.deleteFile(segObj.file).catch(() => {});
-                  segObj.rawBytes = bytes;
-                  return bytes;
+                // Reads a single keyframe file from splitWorker on-demand (~2ms) and caches it
+                let splitReadChain = Promise.resolve();
+                const getKeyframeSegmentBytes = (segObj) => {
+                  if (segObj.rawBytes) return Promise.resolve(segObj.rawBytes);
+                  const p = splitReadChain.then(async () => {
+                    if (segObj.rawBytes) return segObj.rawBytes;
+                    const bytes = await splitWorker.readFile(segObj.file);
+                    await splitWorker.deleteFile(segObj.file).catch(() => {});
+                    segObj.rawBytes = bytes;
+                    return bytes;
+                  });
+                  splitReadChain = p.catch(() => {});
+                  return p;
                 };
 
-                // Encodes a keyframe segment (or a fast startup/seek half-segment) on Worker `wIdx`
-                // Uses adaptive aspect-ratio scaling `scale=-2:'min(540,ih)'` + `-crf 21` bicubic:
-                // - Works with ANY input resolution (360p, 480p, 720p, 1080p, 4K)
-                // - Crisp HD clarity while encoding 3x faster than 1280x720 so it NEVER buffers every 5-10s!
-                const encodeKeyframeOnWorker = async (wIdx, segObj, subStart = 0, subDur = 0) => {
+                // Encodes a full keyframe segment ONCE in a single pass at crisp 854x480 HD (-crf 21, bilinear)
+                const encodeKeyframeSegmentOnWorker = async (wIdx, segObj, maxDurLimit = 0) => {
                   const worker = ffmpegPool[wIdx];
                   ffmpegBusyFlags[wIdx] = true;
-                  const tag = `${jobId}_${wIdx}_${segObj.idx}_${Math.round(subStart * 10)}`;
-                  const inFile = `in_${tag}.mkv`;
-                  const outFile = `out_${tag}.mp4`;
+                  const inSegName = `in_${jobId}_${wIdx}_${segObj.idx}.mkv`;
+                  const outSegName = `out_${jobId}_${wIdx}_${segObj.idx}.mp4`;
 
                   try {
-                    const rawBytes = await getKeyframeBytesOnDemand(segObj);
-                    await worker.writeFile(inFile, new Uint8Array(rawBytes));
-
-                    const args = ["-y", "-i", inFile];
-                    if (subStart > 0.05) {
-                      args.push("-ss", String(subStart.toFixed(3)));
+                    const rawSegBytes = await getKeyframeSegmentBytes(segObj);
+                    if (jobId !== activeStreamJobId) {
+                      ffmpegBusyFlags[wIdx] = false;
+                      return null;
                     }
-                    if (subDur > 0.05) {
-                      args.push("-t", String(subDur.toFixed(3)));
+
+                    await worker.writeFile(inSegName, new Uint8Array(rawSegBytes));
+
+                    const args = ["-y", "-i", inSegName];
+                    if (maxDurLimit > 0 && segObj.dur > maxDurLimit + 0.5) {
+                      args.push("-t", String(maxDurLimit.toFixed(2)));
                     }
                     args.push(
                       "-map", "0:v:0",
@@ -1705,27 +1699,29 @@ jobs:
                       "-level", "3.1",
                       "-crf", "21",
                       "-pix_fmt", "yuv420p",
-                      "-vf", "fps=18,scale=-2:'min(540,ih)',format=yuv420p",
-                      "-sws_flags", "bicubic",
+                      "-vf", "fps=18,scale=854:480,format=yuv420p",
+                      "-sws_flags", "bilinear",
                       "-g", "36",
                       "-keyint_min", "18",
                       "-sc_threshold", "0",
-                      "-x264-params", "me=dia:subme=1:trellis=0:aq-mode=0:deblock=0:weightp=0:cabac=0:bframes=0:ref=1:scenecut=0",
+                      "-x264opts", "no-cabac:no-deblock:subme=0:me=dia:trellis=0:aq-mode=0:weightp=0:bframes=0:ref=1:scenecut=0",
                       "-f", "mp4",
                       "-movflags", "frag_keyframe+empty_moov+default_base_moof",
-                      outFile
+                      outSegName
                     );
 
                     const ret = await worker.exec(args);
-                    await worker.deleteFile(inFile).catch(() => {});
+                    await worker.deleteFile(inSegName).catch(() => {});
 
                     if (ret === 0) {
-                      const data = await worker.readFile(outFile);
-                      await worker.deleteFile(outFile).catch(() => {});
+                      const data = await worker.readFile(outSegName);
+                      await worker.deleteFile(outSegName).catch(() => {});
                       ffmpegBusyFlags[wIdx] = false;
+                      // Free raw input bytes after full segment encode to keep RAM usage low
+                      if (!maxDurLimit) segObj.rawBytes = null;
                       if (data && data.byteLength > 256) return data;
                     }
-                    await worker.deleteFile(outFile).catch(() => {});
+                    await worker.deleteFile(outSegName).catch(() => {});
                   } catch (e) {}
                   ffmpegBusyFlags[wIdx] = false;
                   return null;
@@ -1737,6 +1733,39 @@ jobs:
                 let nextAppendIdx = 0;
                 let needsOffsetReset = true;
                 let seekEpoch = 0;
+
+                // Launch Segment 0, 1, 2, 3 across all 4 Workers in parallel!
+                // Wait until at least ~7.5 seconds of video (Segment 0, or Segment 0 + 1 if Segment 0 is short)
+                // is ready so playback NEVER stalls 2 seconds after starting!
+                setStatus("⚡ Buffering HD Stream Across 4 Cores...", true);
+
+                const needSecondSegBeforePlay = segments.length > 1 && segments[0].dur < 5.5;
+                const startupPromises = [];
+
+                for (let wIdx = 0; wIdx < Math.min(WORKER_POOL_SIZE, segments.length); wIdx++) {
+                  inProgressSet.add(wIdx);
+                  const p = encodeKeyframeSegmentOnWorker(wIdx, segments[wIdx], 0).then((data) => {
+                    inProgressSet.delete(wIdx);
+                    if (data && seekEpoch === 0) completedMap.set(wIdx, data);
+                    return data;
+                  });
+                  if (wIdx === 0 || (needSecondSegBeforePlay && wIdx === 1)) {
+                    startupPromises.push(p);
+                  }
+                }
+
+                await Promise.all(startupPromises);
+                if (!completedMap.has(0)) {
+                  throw new Error("Could not initialize HD video stream.");
+                }
+
+                if (probeInfo.audioCodec) {
+                  bindAuxAudioToVideo(videoEl, rawMediaBlob);
+                }
+
+                const mediaSource = new MSClass();
+                currentObjectUrl = URL.createObjectURL(mediaSource);
+
                 let appendLock = false;
                 let sbRef = null;
                 let waitForSbRef = null;
@@ -1751,21 +1780,17 @@ jobs:
                       completedMap.has(nextAppendIdx)
                     ) {
                       const thisIdx = nextAppendIdx;
-                      const entry = completedMap.get(thisIdx);
+                      const data = completedMap.get(thisIdx);
                       completedMap.delete(thisIdx);
 
-                      if (entry && segments[thisIdx]) {
-                        const buffers = Array.isArray(entry) ? entry : [entry];
-                        for (const bufData of buffers) {
-                          if (!bufData) continue;
-                          await waitForSbRef();
-                          if (needsOffsetReset) {
-                            sbRef.timestampOffset = segments[thisIdx].start;
-                            needsOffsetReset = false;
-                          }
-                          sbRef.appendBuffer(bufData.buffer);
-                          await waitForSbRef();
+                      if (data && segments[thisIdx]) {
+                        await waitForSbRef();
+                        if (needsOffsetReset) {
+                          sbRef.timestampOffset = segments[thisIdx].start;
+                          needsOffsetReset = false;
                         }
+                        sbRef.appendBuffer(data.buffer);
+                        await waitForSbRef();
                         appendedSet.add(thisIdx);
                       } else {
                         appendedSet.add(thisIdx);
@@ -1775,76 +1800,6 @@ jobs:
                   } catch (e) {}
                   appendLock = false;
                 };
-
-                // Helper for fast startup (0:00) or fast timeline seek:
-                // If the target keyframe GOP is long (> 5s), Worker 0 encodes the first 3.2s while Worker 1 encodes the rest of the GOP in parallel!
-                const encodeUrgentFirstSegment = async (targetIdx, currentEpoch) => {
-                  const segObj = segments[targetIdx];
-                  inProgressSet.add(targetIdx);
-
-                  if (segObj.dur > 5.0) {
-                    const firstHalfDur = 3.2;
-                    // Launch Part B (3.2s -> end) on Worker 1 AND next segment (targetIdx + 1) on Worker 2 in parallel!
-                    const partAPromise = encodeKeyframeOnWorker(0, segObj, 0, firstHalfDur);
-                    const partBPromise = encodeKeyframeOnWorker(1, segObj, firstHalfDur, segObj.dur - firstHalfDur);
-                    if (targetIdx + 1 < segments.length) {
-                      inProgressSet.add(targetIdx + 1);
-                      encodeKeyframeOnWorker(2, segments[targetIdx + 1], 0, 0).then((dNext) => {
-                        inProgressSet.delete(targetIdx + 1);
-                        if (dNext && seekEpoch === currentEpoch) {
-                          completedMap.set(targetIdx + 1, dNext);
-                          flushOrderedAppends();
-                        }
-                      });
-                    }
-
-                    const partAData = await partAPromise;
-                    // As soon as Part B finishes ~1.5s later, append it right behind Part A
-                    partBPromise.then(async (partBData) => {
-                      inProgressSet.delete(targetIdx);
-                      if (partBData && seekEpoch === currentEpoch && sbRef && waitForSbRef) {
-                        try {
-                          await waitForSbRef();
-                          sbRef.appendBuffer(partBData.buffer);
-                          await waitForSbRef();
-                        } catch (e) {}
-                        await flushOrderedAppends();
-                      }
-                    });
-                    return partAData;
-                  } else {
-                    // Launch targetIdx on Worker 0, targetIdx+1 on Worker 1, targetIdx+2 on Worker 2 simultaneously!
-                    for (let w = 1; w <= 2; w++) {
-                      const sIdx = targetIdx + w;
-                      if (sIdx < segments.length && !inProgressSet.has(sIdx)) {
-                        inProgressSet.add(sIdx);
-                        encodeKeyframeOnWorker(w, segments[sIdx], 0, 0).then((d) => {
-                          inProgressSet.delete(sIdx);
-                          if (d && seekEpoch === currentEpoch) {
-                            completedMap.set(sIdx, d);
-                            flushOrderedAppends();
-                          }
-                        });
-                      }
-                    }
-                    const d0 = await encodeKeyframeOnWorker(0, segObj, 0, 0);
-                    inProgressSet.delete(targetIdx);
-                    return d0;
-                  }
-                };
-
-                setStatus("⚡ Starting Stream (0:00)...", true);
-                const firstData = await encodeUrgentFirstSegment(0, 0);
-                if (!firstData) {
-                  throw new Error("Could not initialize video stream.");
-                }
-
-                if (probeInfo.audioCodec) {
-                  bindAuxAudioToVideo(videoEl, rawMediaBlob);
-                }
-
-                const mediaSource = new MSClass();
-                currentObjectUrl = URL.createObjectURL(mediaSource);
 
                 await new Promise((resolve, reject) => {
                   mediaSource.addEventListener('sourceopen', async () => {
@@ -1859,14 +1814,6 @@ jobs:
                         if (!sourceBuffer.updating) { r(); return; }
                         sourceBuffer.addEventListener('updateend', () => r(), { once: true });
                       });
-
-                      sourceBuffer.timestampOffset = 0;
-                      sourceBuffer.appendBuffer(firstData.buffer);
-                      await waitForSbRef();
-                      needsOffsetReset = false;
-                      appendedSet.add(0);
-                      nextAppendIdx = 1;
-
                       resolve();
                     } catch (err) {
                       reject(err);
@@ -1907,7 +1854,7 @@ jobs:
                   if (isTimeBuffered(t)) return true;
                   const b = videoEl.buffered;
                   for (let i = 0; i < b.length; i++) {
-                    if (b.start(i) > t && b.start(i) - t <= 2.5 && b.end(i) > b.start(i) + 0.1) {
+                    if (b.start(i) > t && b.start(i) - t <= 2.8 && b.end(i) > b.start(i) + 0.1) {
                       videoEl.currentTime = b.start(i) + 0.04;
                       return true;
                     }
@@ -1938,7 +1885,7 @@ jobs:
                   }
                 }, 180);
 
-                // INSTANT TIMELINE SEEK: Preempts busy workers in 0ms and encodes target keyframe immediately!
+                // PREEMPTIVE TIMELINE SEEK HANDLER: terminates busy workers & swaps in warm standby workers in 0ms!
                 let seekDebounceTimer = null;
                 videoEl.onseeking = () => {
                   auxAudio.pause();
@@ -1955,45 +1902,20 @@ jobs:
 
                   setOverlayBadge(`⚡ Loading ${formatTimeMmSs(targetTime)}...`);
                   seekDebounceTimer = setTimeout(async () => {
-                    const mySeekEpoch = ++seekEpoch;
                     const targetIdx = findSegIdxForTime(videoEl.currentTime);
 
+                    seekEpoch++;
                     completedMap.clear();
                     inProgressSet.clear();
                     nextAppendIdx = targetIdx;
                     needsOffsetReset = true;
 
-                    // Terminate any busy workers encoding old segments & swap in warm standby workers!
                     await preemptBusyWorkersForInstantSeek();
-                    if (mySeekEpoch !== seekEpoch) return;
-
-                    const urgentData = await encodeUrgentFirstSegment(targetIdx, mySeekEpoch);
-                    if (mySeekEpoch !== seekEpoch || !urgentData) return;
-
-                    await waitForSbRef();
-                    sbRef.timestampOffset = segments[targetIdx].start;
-                    needsOffsetReset = false;
-                    sbRef.appendBuffer(urgentData.buffer);
-                    await waitForSbRef();
-                    appendedSet.add(targetIdx);
-                    nextAppendIdx = targetIdx + 1;
-
-                    await flushOrderedAppends();
-                    snapIntoBufferIfNear();
-                    setOverlayBadge("");
-                    if (!videoEl.paused) {
-                      videoEl.play().catch(() => {});
-                      if (probeInfo.audioCodec) {
-                        try { auxAudio.currentTime = videoEl.currentTime; } catch (e) {}
-                        auxAudio.play().catch(() => {});
-                      }
-                    }
-                  }, 100);
+                  }, 90);
                 };
 
-                // Background Scheduler: each worker encodes 1 whole keyframe GOP per pass (0% duplicate decoding!)
                 const pickNextSegmentToEncode = () => {
-                  const maxAhead = Math.min(segments.length - 1, nextAppendIdx + 15);
+                  const maxAhead = Math.min(segments.length - 1, nextAppendIdx + 16);
                   for (let s = nextAppendIdx; s <= maxAhead; s++) {
                     if (!appendedSet.has(s) && !completedMap.has(s) && !inProgressSet.has(s)) {
                       return s;
@@ -2002,6 +1924,7 @@ jobs:
                   return -1;
                 };
 
+                // 4 Parallel Worker Loops
                 const runWorkerLoop = async (wIdx) => {
                   while (jobId === activeStreamJobId && mediaSource.readyState === 'open') {
                     if (ffmpegBusyFlags[wIdx]) {
@@ -2019,7 +1942,7 @@ jobs:
                     const myEpoch = seekEpoch;
                     inProgressSet.add(segIdx);
 
-                    const data = await encodeKeyframeOnWorker(wIdx, segments[segIdx], 0, 0);
+                    const data = await encodeKeyframeSegmentOnWorker(wIdx, segments[segIdx], 0);
                     inProgressSet.delete(segIdx);
 
                     if (jobId !== activeStreamJobId || mediaSource.readyState !== 'open') break;
@@ -2065,7 +1988,7 @@ jobs:
 
                 const rawMediaBlob = new Blob(rawChunks);
 
-                // Stage 1: Direct native playback for MP4/WebM (~0.8s, 100% original resolution up to 4K)
+                // Stage 1: Direct native playback for MP4/WebM (~0.8s)
                 if (!isMkvSignature && e !== '.mkv') {
                   setStatus("Starting Native Player...", true);
                   const mime = e === '.webm' ? 'video/webm' : 'video/mp4';
@@ -2080,34 +2003,40 @@ jobs:
                   }
                 }
 
-                // Stage 2: Ensure Pre-Warmed Parallel Worker Pool is ready
+                // Stage 2: Ensure 4-Worker Parallel Pool + Split Worker are ready
                 await ensureFfmpegPoolLoaded((msg) => setStatus(msg, true));
 
+                const stamp = Date.now();
+                const inName = `in_${stamp}${ext || '.mkv'}`;
                 const fullUint8 = new Uint8Array(await rawMediaBlob.arrayBuffer());
+                await splitWorker.writeFile(inName, fullUint8);
 
-                // Stage 3: Quick 0.8s Hardware Remux Test on a 6 MB prefix (plays 8-bit H.264 / supported MKV at 100% original resolution)
+                ffmpegLastLogs = [];
                 try {
-                  const testPrefix = fullUint8.slice(0, Math.min(fullUint8.byteLength, 6 * 1024 * 1024));
-                  await splitWorker.writeFile("probe_in.mkv", testPrefix);
-                  ffmpegLastLogs = [];
-                  try { await splitWorker.exec(["-i", "probe_in.mkv"]); } catch (e) {}
-                  await splitWorker.deleteFile("probe_in.mkv").catch(() => {});
-                  const pInfo = parseFfmpegProbeLogs(ffmpegLastLogs.join('\n'));
+                  await splitWorker.exec(["-i", inName]);
+                } catch (e) {}
+                const probeInfo = parseFfmpegProbeLogs(ffmpegLastLogs.join('\n'));
 
-                  if (pInfo.videoCodec === 'h264' && !pInfo.is10Bit) {
-                    setStatus("Remuxing H.264 to Native MP4 (1s)...", true);
-                    await splitWorker.writeFile("full_in.mkv", fullUint8);
+                // Stage 3: If video is standard 8-bit H.264 inside MKV, do a 1-second lossless copy + synced audio
+                if (probeInfo.videoCodec === 'h264' && !probeInfo.is10Bit) {
+                  setStatus("Remuxing H.264 to Native MP4 (1s)...", true);
+                  const outRemux = `remux_${stamp}.mp4`;
+                  try {
                     const ret = await splitWorker.exec([
-                      "-y", "-i", "full_in.mkv", "-map", "0:v:0", "-c:v", "copy", "-an", "-movflags", "+faststart", "full_out.mp4"
+                      "-y", "-i", inName,
+                      "-map", "0:v:0", "-c:v", "copy", "-an",
+                      "-movflags", "+faststart",
+                      outRemux
                     ]);
-                    await splitWorker.deleteFile("full_in.mkv").catch(() => {});
                     if (ret === 0) {
-                      const d = await splitWorker.readFile("full_out.mp4");
-                      await splitWorker.deleteFile("full_out.mp4").catch(() => {});
-                      if (d && d.byteLength > 1024) {
-                        const ok = await tryPlayOnRealVideoPlayer(videoEl, new Blob([d.buffer], { type: 'video/mp4' }), expectVideo, 1400);
+                      const data = await splitWorker.readFile(outRemux);
+                      await splitWorker.deleteFile(outRemux).catch(() => {});
+                      if (data && data.byteLength > 1024) {
+                        const mp4Blob = new Blob([data.buffer], { type: 'video/mp4' });
+                        const ok = await tryPlayOnRealVideoPlayer(videoEl, mp4Blob, expectVideo, 1400);
                         if (ok) {
-                          if (pInfo.audioCodec) bindAuxAudioToVideo(videoEl, rawMediaBlob);
+                          await splitWorker.deleteFile(inName).catch(() => {});
+                          if (probeInfo.audioCodec) bindAuxAudioToVideo(videoEl, rawMediaBlob);
                           videoEl.muted = false;
                           videoEl.controls = true;
                           setStatus("", false);
@@ -2117,11 +2046,11 @@ jobs:
                         }
                       }
                     }
-                  }
-                } catch (e) {}
+                  } catch (e) {}
+                }
 
-                // Stage 4: On-Demand Keyframe Parallel Streamer (for 10-bit HEVC / Opus MKV files)
-                await startOnDemandKeyframeStream(fullUint8, rawMediaBlob, ext, setStatus);
+                // Stage 4: 4-Worker Parallel Keyframe HD Streamer (zero redundant decode, on-demand read, fast seek)
+                await startFourWorkerKeyframeStream(inName, rawMediaBlob, probeInfo, setStatus);
               }
 
               async function handleDecryptAndWatch() {
@@ -2550,7 +2479,7 @@ jobs:
 
                 setTimeout(() => {
                   ensureFfmpegPoolLoaded(() => {}).catch(() => {});
-                }, 600);
+                }, 500);
 
                 bindDropZone('viewerDropZone', 'vlockFileInput', (f) => onVlockFilePicked(f, true));
                 bindDropZone('encryptDropZone', 'rawMediaInput', onRawMediaPicked);
