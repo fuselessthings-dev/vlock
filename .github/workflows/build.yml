@@ -105,7 +105,7 @@ jobs:
             <meta charset="UTF-8" />
             <meta name="viewport" content="width=device-width, initial-scale=1.0" />
             <meta name="theme-color" content="#161b22" />
-            <title>VLock v4.4 — User Decryption & Admin Encryption</title>
+            <title>VLock v4.5 — User Decryption & Admin Encryption</title>
             <style>
               :root {
                 --bg-dark: #0d1117;
@@ -213,6 +213,42 @@ jobs:
                 padding: 7px 10px; text-align: center;
               }
 
+              /* PLAYER CHOICE CARDS */
+              .choice-box {
+                display: flex; flex-direction: column; gap: 10px; margin-top: 2px;
+              }
+              .choice-btn {
+                border-radius: 10px; padding: 13px 15px; cursor: pointer; text-align: left;
+                display: flex; flex-direction: column; gap: 4px; transition: transform 0.1s, opacity 0.15s;
+                border: 2px solid transparent; width: 100%;
+              }
+              .choice-btn:active { transform: scale(0.985); }
+              .choice-btn:disabled { opacity: 0.55; cursor: not-allowed; }
+              .choice-btn-mobile {
+                background: linear-gradient(135deg, #143d29 0%, #1b4d35 100%);
+                border-color: #3fb950; color: #ffffff;
+              }
+              .choice-btn-browser {
+                background: #161b22; border-color: #388bfd; color: #ffffff;
+              }
+              .choice-title {
+                font-size: 14px; font-weight: 800; display: flex; align-items: center; justify-content: space-between; gap: 8px;
+              }
+              .choice-sub {
+                font-size: 11.5px; color: #c9d1d9; font-weight: 500; line-height: 1.35;
+              }
+              .rec-pill {
+                background: #2ea043; color: #ffffff; font-size: 10px; font-weight: 800;
+                padding: 2px 8px; border-radius: 12px; text-transform: uppercase;
+              }
+
+              /* MOBILE PLAYER HANDOFF PANEL */
+              .mobile-ready-panel {
+                display: none; flex-direction: column; gap: 10px; background: #071710;
+                border: 2px solid #3fb950; border-radius: 10px; padding: 15px; margin-top: 6px;
+              }
+              .mobile-ready-panel.active { display: flex; }
+
               /* PURE BROWSER NATIVE VIDEO PLAYER WITHOUT DOWNLOAD BUTTON */
               .player-wrap {
                 display: none; position: relative; width: 100%; background: #000000;
@@ -301,7 +337,7 @@ jobs:
               }
               .modal-backdrop.show { display: flex; }
               .modal {
-                background: #161b22; border: 1px solid #30363d; border-radius: 12px; max-width: 460px; width: 100%;
+                background: #161b22; border: 1px solid #30363d; border-radius: 12px; max-width: 480px; width: 100%;
                 padding: 20px; display: flex; flex-direction: column; gap: 14px; box-shadow: 0 12px 40px rgba(0,0,0,0.85);
               }
               .modal h2 { font-size: 17px; color: #ffffff; }
@@ -316,7 +352,7 @@ jobs:
             <!-- TOP BAR -->
             <div class="topbar">
               <div class="brand">
-                <h1>VLock v4.4</h1>
+                <h1>VLock v4.5</h1>
                 <span>User Decryption & Admin Encryption</span>
               </div>
               <div class="top-actions">
@@ -351,7 +387,7 @@ jobs:
                   </svg>
                   <div class="nle-text">
                     <h3 id="viewerFileTitle">Tap or Drag & Drop Encrypted Video (.html / .htm / .vlock) Here</h3>
-                    <p>Plays natively in HD on all devices • Instant local playback (0 MB internet upload)</p>
+                    <p>Supports Mobile Player (VLC / MX / All Players) & Browser Player • 0 MB internet upload</p>
                   </div>
                 </div>
 
@@ -361,8 +397,30 @@ jobs:
                 </div>
 
                 <button type="button" class="btn btn-green" id="btnDecryptWatch" style="padding:12px;font-size:14px">
-                  ▶ Decrypt & Watch / Unlock
+                  ▶ Decrypt & Choose Player (Mobile / Browser)
                 </button>
+
+                <!-- MOBILE PLAYER HANDOFF PANEL (WORKS WITH VLC, MX PLAYER, SYSTEM PLAYER) -->
+                <div class="mobile-ready-panel" id="mobileReadyPanel">
+                  <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+                    <h3 style="font-size:14px;color:#3fb950;">📱 Mobile Player Stream Ready (Full Original HD)</h3>
+                    <span style="font-size:11px;color:#c9d1d9;">Zero Lag • Instant Timeline Seeking</span>
+                  </div>
+                  <p style="font-size:12px;color:#e6edf3;line-height:1.45;">
+                    Tap <b>Open in Mobile Player App</b> below (or tap <b>"Open"</b> on your browser's bar) to watch in <b>VLC, MX Player, or your phone's Video Player</b> with instant timeline seeking:
+                  </p>
+                  <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                    <button type="button" class="btn btn-green" id="btnShareToMobileApp" style="flex:1;padding:11px;font-size:13px;">
+                      📲 Open in Mobile Player App (VLC / MX / All Players)
+                    </button>
+                    <button type="button" class="btn btn-blue" id="btnReopenMobileFile" style="padding:11px 14px;font-size:12.5px;">
+                      ▶ Open Video File
+                    </button>
+                    <button type="button" class="btn btn-dark" id="btnSwitchToBrowserPlayer" style="padding:11px 14px;font-size:12px;">
+                      🌐 Switch to Browser Player
+                    </button>
+                  </div>
+                </div>
 
                 <!-- PURE BROWSER NATIVE PLAYER WITHOUT DOWNLOAD BUTTON -->
                 <div class="player-wrap" id="playerWrap">
@@ -510,20 +568,17 @@ jobs:
                   </div>
 
                   <div class="step-card">
-                    <span class="step-badge badge-green">STEP 3 • PASTE KEY & WATCH</span>
+                    <span class="step-badge badge-green">STEP 3 • CHOOSE PLAYER</span>
                     <div class="step-visual">
                       <svg width="210" height="100" viewBox="0 0 210 100" fill="none">
-                        <rect x="15" y="14" width="125" height="28" rx="6" fill="#071710" stroke="#2ea043" stroke-width="1.5"/>
-                        <text x="77" y="32" fill="#3fb950" font-family="monospace" font-size="9" font-weight="bold" text-anchor="middle">VLOCK-9A2F-...</text>
-                        <rect x="146" y="14" width="49" height="28" rx="6" fill="#1b4332"/>
-                        <text x="170" y="32" fill="#ffffff" font-size="9" font-weight="bold" text-anchor="middle">Paste</text>
-                        <rect x="15" y="50" width="180" height="36" rx="7" fill="#2ea043"/>
-                        <polygon points="62,62 62,74 73,68" fill="#ffffff"/>
-                        <text x="115" y="72" fill="#ffffff" font-size="11" font-weight="bold" text-anchor="middle">Decrypt & Watch</text>
+                        <rect x="15" y="14" width="180" height="34" rx="6" fill="#143d29" stroke="#3fb950" stroke-width="1.5"/>
+                        <text x="105" y="35" fill="#ffffff" font-size="10" font-weight="bold" text-anchor="middle">📱 Mobile Player (Recommended)</text>
+                        <rect x="15" y="54" width="180" height="32" rx="6" fill="#161b22" stroke="#388bfd" stroke-width="1.5"/>
+                        <text x="105" y="74" fill="#ffffff" font-size="10" font-weight="bold" text-anchor="middle">🌐 Browser Player</text>
                       </svg>
                     </div>
-                    <h4>3. Paste Key & Watch</h4>
-                    <p>Click <b>Paste Key</b> in the popup window, then tap <b>Decrypt & Watch</b>. The video plays natively in HD with full-screen support!</p>
+                    <h4>3. Choose Mobile or Browser Player</h4>
+                    <p>Paste your key and choose <b>Mobile Player (Recommended)</b> for instant playback in VLC / MX Player / all players, or <b>Browser Player</b>!</p>
                   </div>
                 </div>
 
@@ -633,21 +688,36 @@ jobs:
               For any issue contact <a href="https://t.me/Modrat_editor" target="_blank" rel="noopener">@Modrat_editor</a> using Telegram.
             </div>
 
-            <!-- AUTOMATIC DECRYPTION KEY POPUP MODAL -->
+            <!-- AUTOMATIC DECRYPTION KEY & 2-OPTION PLAYER CHOICE MODAL -->
             <div class="modal-backdrop" id="instantKeyModal">
               <div class="modal" style="border:2px solid #2ea043;background:#0b2419;">
                 <div style="display:flex;justify-content:space-between;align-items:center;">
-                  <h2 style="color:#3fb950;">🔑 Enter Decryption Key</h2>
+                  <h2 style="color:#3fb950;">🔑 Enter Key & Choose Player</h2>
                   <button type="button" class="btn btn-dark" id="btnCloseInstantKeyModal" style="padding:4px 10px;font-size:11px;">✕</button>
                 </div>
-                <p id="instantKeyModalFileLabel" style="color:#ffffff;font-weight:700;font-size:13px;">Paste your key below to unlock and play immediately:</p>
+                <p id="instantKeyModalFileLabel" style="color:#ffffff;font-weight:700;font-size:13px;">Paste your key below and select how you want to watch:</p>
                 <div class="input-row">
                   <input type="text" id="modalViewerKeyInput" class="input-box" placeholder="Paste Key Here (VLOCK-...)" />
                   <button type="button" class="btn btn-dark" id="btnModalPasteKey" style="background:#1b4332;border-color:#2ea043;color:#fff">Paste Key</button>
                 </div>
-                <button type="button" class="btn btn-green" id="btnModalDecryptWatch" style="padding:12px;font-size:14px;">
-                  ▶ Decrypt & Watch Now
-                </button>
+
+                <div class="choice-box">
+                  <button type="button" class="choice-btn choice-btn-mobile" id="btnModalMobilePlayer">
+                    <div class="choice-title">
+                      <span>📱 1. Mobile Player (All Players)</span>
+                      <span class="rec-pill">Recommended</span>
+                    </div>
+                    <span class="choice-sub">Works with VLC, MX Player & all system video players • Instant 0-lag playback, original 720p/1080p HD & instant timeline seeking</span>
+                  </button>
+
+                  <button type="button" class="choice-btn choice-btn-browser" id="btnModalBrowserPlayer">
+                    <div class="choice-title">
+                      <span>🌐 2. Browser Player</span>
+                      <span style="font-size:10px;color:#58a6ff;font-weight:700;">Built-In Web Player</span>
+                    </div>
+                    <span class="choice-sub">Plays directly inside this browser page (Best for PC / fast hardware)</span>
+                  </button>
+                </div>
               </div>
             </div>
 
@@ -711,11 +781,10 @@ jobs:
               const ZK_PUB_X_B64U = "__ZK_PUB_X_B64U__";
               const ZK_PUB_Y_B64U = "__ZK_PUB_Y_B64U__";
               const SLOT_SIZE = 48;
-              const DB_NAME = "vlock_verified_db_v44";
-              const ENGINE_DB_NAME = "vlock_engine_cache_v44";
-              const BURNED_KEYS_STORAGE = "vlock_burned_keys_v44";
-              const WORKER_POOL_SIZE = 4;
-              const STANDBY_POOL_SIZE = 3;
+              const DB_NAME = "vlock_verified_db_v45";
+              const ENGINE_DB_NAME = "vlock_engine_cache_v45";
+              const BURNED_KEYS_STORAGE = "vlock_burned_keys_v45";
+              const WORKER_POOL_SIZE = 2;
 
               const CODE_TO_SECONDS = { "1D": 86400, "1W": 7 * 86400, "1M": 30 * 86400, "1Y": 365 * 86400, "LT": -1 };
               const CODE_TO_LABEL = { "1D": "1 Day", "1W": "1 Week", "1M": "1 Month", "1Y": "1 Year", "LT": "Lifetime" };
@@ -729,10 +798,15 @@ jobs:
               let currentObjectUrl = null;
               let currentAuxAudioUrl = null;
               let autoPlayPendingAfterPick = false;
+              let pendingPlayerMode = "mobile";
+
+              let lastDecryptedChunks = null;
+              let lastDecryptedExt = ".mkv";
+              let lastDecryptedFirstBytes = null;
+              let lastDecryptedFileObj = null;
+              let lastDecryptedCleanName = "Video.mkv";
 
               let ffmpegPool = [];
-              let ffmpegBusyFlags = [false, false, false, false];
-              let ffmpegStandbyPool = [];
               let splitWorker = null;
               let ffmpegCoreBlobUrl = null;
               let ffmpegWasmBlobUrl = null;
@@ -1027,8 +1101,6 @@ jobs:
               async function onVlockFilePicked(file, showPopup = true) {
                 if (!file) return;
 
-                ensureFfmpegPoolLoaded(() => {}).catch(() => {});
-
                 if (file.size < 512 * 1024 && /\.txt$/i.test(file.name)) {
                   try {
                     const txt = await file.text();
@@ -1056,16 +1128,17 @@ jobs:
                 const currentKey = document.getElementById('viewerKeyInput').value.trim();
                 if (autoPlayPendingAfterPick && currentKey) {
                   autoPlayPendingAfterPick = false;
-                  handleDecryptAndWatch();
+                  handleDecryptAndWatch(pendingPlayerMode);
                   return;
                 }
 
                 if (showPopup) {
+                  document.getElementById('modalViewerKeyInput').value = currentKey;
                   document.getElementById('instantKeyModalFileLabel').textContent = `🎬 Ready to Play: ${file.name} (${sizeMb} MB)`;
                   document.getElementById('instantKeyModal').classList.add('show');
                   setTimeout(() => {
                     const modalInput = document.getElementById('modalViewerKeyInput');
-                    if (modalInput) modalInput.focus();
+                    if (modalInput && !modalInput.value) modalInput.focus();
                   }, 60);
                 }
               }
@@ -1073,8 +1146,6 @@ jobs:
               async function checkRedirectedVideoLaunch() {
                 const params = new URLSearchParams(window.location.search);
                 if (!params.has('play') && !params.has('auto_unlock')) return;
-
-                ensureFfmpegPoolLoaded(() => {}).catch(() => {});
 
                 const targetName = params.get('play') || params.get('file') || '';
                 window.history.replaceState({}, document.title, window.location.pathname);
@@ -1090,8 +1161,8 @@ jobs:
                   selectedVlockFile = null;
                   selectedFileFromCache = false;
                   document.getElementById('instantKeyModalFileLabel').textContent = targetName
-                    ? `🎬 Opening "${targetName}" — Paste your key & tap Decrypt & Watch:`
-                    : `🎬 Paste your Decryption Key below to unlock & play your video:`;
+                    ? `🎬 Opening "${targetName}" — Paste your key & choose player:`
+                    : `🎬 Paste your Decryption Key below & choose your player:`;
                 }
 
                 document.getElementById('instantKeyModal').classList.add('show');
@@ -1326,7 +1397,53 @@ jobs:
               }
 
               // =========================================================================
-              // 4-WORKER PARALLEL HD STREAMER + ON-DEMAND KEYFRAME READER + SEEK PREEMPT
+              // OPTION 1: MOBILE PLAYER (RECOMMENDED — WORKS WITH ALL PLAYERS)
+              // =========================================================================
+              function getNativeMediaMime(ext) {
+                const e = (ext || '.mp4').toLowerCase();
+                const map = {
+                  '.mp4': 'video/mp4', '.m4v': 'video/mp4', '.mkv': 'video/x-matroska',
+                  '.webm': 'video/webm', '.mov': 'video/quicktime', '.avi': 'video/x-msvideo',
+                  '.ts': 'video/mp2t', '.mp3': 'audio/mpeg', '.flac': 'audio/flac',
+                  '.wav': 'audio/wav', '.aac': 'audio/aac', '.ogg': 'audio/ogg', '.m4a': 'audio/mp4'
+                };
+                return map[e] || 'video/mp4';
+              }
+
+              async function launchInMobilePlayer(rawChunks, ext, firstChunkBytes, origName) {
+                activeStreamJobId++;
+                const videoEl = document.getElementById('vlockVideoPlayer');
+                videoEl.pause();
+                clearPlayerListeners();
+                document.getElementById('playerWrap').classList.remove('active');
+                document.getElementById('instantKeyModal').classList.remove('show');
+
+                lastDecryptedChunks = rawChunks;
+                lastDecryptedExt = ext || '.mkv';
+                lastDecryptedFirstBytes = firstChunkBytes;
+
+                const cleanStem = (origName || 'Video').replace(/\.(html|htm|vlock|mp4|mkv)$/i, '');
+                const cleanFileName = `${cleanStem}${lastDecryptedExt}`;
+                const mime = getNativeMediaMime(lastDecryptedExt);
+
+                const mediaBlob = new Blob(rawChunks, { type: mime });
+                lastDecryptedCleanName = cleanFileName;
+                try {
+                  lastDecryptedFileObj = new File([mediaBlob], cleanFileName, { type: mime });
+                } catch (e) {
+                  lastDecryptedFileObj = mediaBlob;
+                }
+
+                const panel = document.getElementById('mobileReadyPanel');
+                panel.classList.add('active');
+                panel.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+                // Trigger instant local file open so tapping "Open" launches VLC / MX Player / System Player immediately
+                await saveBlobToDisk(mediaBlob, cleanFileName);
+              }
+
+              // =========================================================================
+              // OPTION 2: BROWSER PLAYER (WITH FREEZE-FREE TIMELINE SEEKING)
               // =========================================================================
               function isAudioOnlyExt(ext) {
                 const e = (ext || '').toLowerCase();
@@ -1490,34 +1607,6 @@ jobs:
                 return inst;
               }
 
-              function refillStandbyPoolInBackground() {
-                if (!ffmpegCoreBlobUrl || !ffmpegWasmBlobUrl) return;
-                while (ffmpegStandbyPool.length < STANDBY_POOL_SIZE) {
-                  const p = createNewFfmpegWorker(false).catch(() => null);
-                  ffmpegStandbyPool.push(p);
-                }
-              }
-
-              async function preemptBusyWorkersForInstantSeek() {
-                const swapPromises = [];
-                for (let i = 0; i < WORKER_POOL_SIZE; i++) {
-                  if (ffmpegBusyFlags[i]) {
-                    try { ffmpegPool[i].terminate(); } catch (e) {}
-                    ffmpegBusyFlags[i] = false;
-                    const standbyPromise = ffmpegStandbyPool.shift() || createNewFfmpegWorker(false);
-                    swapPromises.push(
-                      standbyPromise.then((freshInst) => {
-                        if (freshInst) ffmpegPool[i] = freshInst;
-                      })
-                    );
-                  }
-                }
-                refillStandbyPoolInBackground();
-                if (swapPromises.length > 0) {
-                  await Promise.all(swapPromises);
-                }
-              }
-
               async function ensureFfmpegPoolLoaded(statusCallback) {
                 if (!window.FFmpegWASM || !window.FFmpegWASM.FFmpeg) {
                   throw new Error("FFmpeg engine script not loaded.");
@@ -1530,27 +1619,24 @@ jobs:
 
                 ffmpegPoolInitPromise = (async () => {
                   if (!ffmpegCoreBlobUrl || !ffmpegWasmBlobUrl) {
-                    if (statusCallback) statusCallback("Loading Video Engine...");
-                    const coreBuf = await fetchAssetWithProgress('./ffmpeg-core.js', 'core_st_js_v44', 50000);
-                    const wasmBuf = await fetchAssetWithProgress('./ffmpeg-core.wasm', 'core_st_wasm_v44', 10000000, (pct) => {
+                    if (statusCallback) statusCallback("Loading Browser Video Engine...");
+                    const coreBuf = await fetchAssetWithProgress('./ffmpeg-core.js', 'core_st_js_v45', 50000);
+                    const wasmBuf = await fetchAssetWithProgress('./ffmpeg-core.wasm', 'core_st_wasm_v45', 10000000, (pct) => {
                       if (statusCallback) statusCallback(`Downloading Video Engine (One-Time)... ${pct}%`);
                     });
                     ffmpegCoreBlobUrl = URL.createObjectURL(new Blob([coreBuf], { type: 'text/javascript' }));
                     ffmpegWasmBlobUrl = URL.createObjectURL(new Blob([wasmBuf], { type: 'application/wasm' }));
                   }
 
-                  if (statusCallback) statusCallback("Starting 4-Core Parallel Video Engine...");
-                  const [w0, w1, w2, w3, ws] = await Promise.all([
-                    createNewFfmpegWorker(false),
-                    createNewFfmpegWorker(false),
+                  if (statusCallback) statusCallback("Starting Browser Video Decoders...");
+                  // Fixed lightweight pool (2 encoders + 1 splitter) — never terminated/respawned on seek!
+                  const [w0, w1, ws] = await Promise.all([
                     createNewFfmpegWorker(false),
                     createNewFfmpegWorker(false),
                     createNewFfmpegWorker(true)
                   ]);
-                  ffmpegPool = [w0, w1, w2, w3];
-                  ffmpegBusyFlags = [false, false, false, false];
+                  ffmpegPool = [w0, w1];
                   splitWorker = ws;
-                  refillStandbyPoolInBackground();
                 })();
 
                 try {
@@ -1585,9 +1671,9 @@ jobs:
               }
 
               // =========================================================================
-              // 4-WORKER PARALLEL KEYFRAME STREAMER (ON-DEMAND READ, ZERO RE-DECODE)
+              // FREEZE-FREE BROWSER MSE STREAMER (NO WORKER TERMINATION, NO SEEK LOOP)
               // =========================================================================
-              async function startFourWorkerKeyframeStream(inName, rawMediaBlob, probeInfo, setStatus) {
+              async function startBrowserMseStream(inName, rawMediaBlob, probeInfo, setStatus) {
                 const jobId = ++activeStreamJobId;
                 const videoEl = document.getElementById('vlockVideoPlayer');
                 const auxAudio = document.getElementById('vlockAuxAudio');
@@ -1605,8 +1691,6 @@ jobs:
                   throw new Error("MediaSource streaming is not supported on this browser.");
                 }
 
-                // Step 1: Split input video at exact keyframes inside splitWorker's MEMFS (~1s).
-                // DO NOT read all 250 files upfront! Keep them in splitWorker's RAM and read on-demand in 2ms!
                 setStatus("⚡ Indexing Keyframes (1s)...", true);
                 const listFile = `list_${jobId}.csv`;
                 const segPattern = `kp_${jobId}_%05d.mkv`;
@@ -1654,7 +1738,7 @@ jobs:
 
                 const totalDuration = segments[segments.length - 1].end;
 
-                // Reads a single keyframe file from splitWorker on-demand (~2ms) and caches it
+                // Reads a single keyframe file from splitWorker on-demand and keeps it cached for instant re-seeks
                 let splitReadChain = Promise.resolve();
                 const getKeyframeSegmentBytes = (segObj) => {
                   if (segObj.rawBytes) return Promise.resolve(segObj.rawBytes);
@@ -1669,27 +1753,20 @@ jobs:
                   return p;
                 };
 
-                // Encodes a full keyframe segment ONCE in a single pass at crisp 854x480 HD (-crf 21, bilinear)
-                const encodeKeyframeSegmentOnWorker = async (wIdx, segObj, maxDurLimit = 0) => {
+                const encodeKeyframeSegmentOnWorker = async (wIdx, segObj) => {
                   const worker = ffmpegPool[wIdx];
-                  ffmpegBusyFlags[wIdx] = true;
                   const inSegName = `in_${jobId}_${wIdx}_${segObj.idx}.mkv`;
                   const outSegName = `out_${jobId}_${wIdx}_${segObj.idx}.mp4`;
 
                   try {
                     const rawSegBytes = await getKeyframeSegmentBytes(segObj);
-                    if (jobId !== activeStreamJobId) {
-                      ffmpegBusyFlags[wIdx] = false;
-                      return null;
-                    }
+                    if (jobId !== activeStreamJobId) return null;
 
                     await worker.writeFile(inSegName, new Uint8Array(rawSegBytes));
 
-                    const args = ["-y", "-i", inSegName];
-                    if (maxDurLimit > 0 && segObj.dur > maxDurLimit + 0.5) {
-                      args.push("-t", String(maxDurLimit.toFixed(2)));
-                    }
-                    args.push(
+                    const ret = await worker.exec([
+                      "-y",
+                      "-i", inSegName,
                       "-map", "0:v:0",
                       "-an",
                       "-c:v", "libx264",
@@ -1697,7 +1774,7 @@ jobs:
                       "-tune", "zerolatency",
                       "-profile:v", "baseline",
                       "-level", "3.1",
-                      "-crf", "21",
+                      "-crf", "22",
                       "-pix_fmt", "yuv420p",
                       "-vf", "fps=18,scale=854:480,format=yuv420p",
                       "-sws_flags", "bilinear",
@@ -1708,22 +1785,17 @@ jobs:
                       "-f", "mp4",
                       "-movflags", "frag_keyframe+empty_moov+default_base_moof",
                       outSegName
-                    );
+                    ]);
 
-                    const ret = await worker.exec(args);
                     await worker.deleteFile(inSegName).catch(() => {});
 
                     if (ret === 0) {
                       const data = await worker.readFile(outSegName);
                       await worker.deleteFile(outSegName).catch(() => {});
-                      ffmpegBusyFlags[wIdx] = false;
-                      // Free raw input bytes after full segment encode to keep RAM usage low
-                      if (!maxDurLimit) segObj.rawBytes = null;
                       if (data && data.byteLength > 256) return data;
                     }
                     await worker.deleteFile(outSegName).catch(() => {});
                   } catch (e) {}
-                  ffmpegBusyFlags[wIdx] = false;
                   return null;
                 };
 
@@ -1733,18 +1805,17 @@ jobs:
                 let nextAppendIdx = 0;
                 let needsOffsetReset = true;
                 let seekEpoch = 0;
+                let activeSeekTargetIdx = -1;
+                let isInternalTimeAdjust = false;
 
-                // Launch Segment 0, 1, 2, 3 across all 4 Workers in parallel!
-                // Wait until at least ~7.5 seconds of video (Segment 0, or Segment 0 + 1 if Segment 0 is short)
-                // is ready so playback NEVER stalls 2 seconds after starting!
-                setStatus("⚡ Buffering HD Stream Across 4 Cores...", true);
+                setStatus("⚡ Preparing Browser Stream...", true);
 
-                const needSecondSegBeforePlay = segments.length > 1 && segments[0].dur < 5.5;
+                const needSecondSegBeforePlay = segments.length > 1 && segments[0].dur < 5.0;
                 const startupPromises = [];
 
                 for (let wIdx = 0; wIdx < Math.min(WORKER_POOL_SIZE, segments.length); wIdx++) {
                   inProgressSet.add(wIdx);
-                  const p = encodeKeyframeSegmentOnWorker(wIdx, segments[wIdx], 0).then((data) => {
+                  const p = encodeKeyframeSegmentOnWorker(wIdx, segments[wIdx]).then((data) => {
                     inProgressSet.delete(wIdx);
                     if (data && seekEpoch === 0) completedMap.set(wIdx, data);
                     return data;
@@ -1756,7 +1827,7 @@ jobs:
 
                 await Promise.all(startupPromises);
                 if (!completedMap.has(0)) {
-                  throw new Error("Could not initialize HD video stream.");
+                  throw new Error("Could not initialize browser video stream.");
                 }
 
                 if (probeInfo.audioCodec) {
@@ -1786,7 +1857,14 @@ jobs:
                       if (data && segments[thisIdx]) {
                         await waitForSbRef();
                         if (needsOffsetReset) {
-                          sbRef.timestampOffset = segments[thisIdx].start;
+                          // Reset sequence parser state cleanly before jumping timestampOffset!
+                          try { sbRef.abort(); } catch (e) {}
+                          // Align timestampOffset so videoEl.currentTime is guaranteed to fall inside the new segment!
+                          const segStart = segments[thisIdx].start;
+                          const curT = videoEl.currentTime;
+                          sbRef.timestampOffset = (curT >= segStart && curT < segments[thisIdx].end)
+                            ? segStart
+                            : segStart;
                           needsOffsetReset = false;
                         }
                         sbRef.appendBuffer(data.buffer);
@@ -1836,7 +1914,7 @@ jobs:
 
                 const findSegIdxForTime = (t) => {
                   for (let i = 0; i < segments.length; i++) {
-                    if (t >= segments[i].start && t < segments[i].end) return i;
+                    if (t >= segments[i].start - 0.05 && t < segments[i].end) return i;
                   }
                   return Math.min(segments.length - 1, Math.max(0, Math.floor(t / 4)));
                 };
@@ -1844,7 +1922,7 @@ jobs:
                 const isTimeBuffered = (t) => {
                   const b = videoEl.buffered;
                   for (let i = 0; i < b.length; i++) {
-                    if (t >= b.start(i) - 0.08 && t <= b.end(i) - 0.08) return true;
+                    if (t >= b.start(i) - 0.1 && t <= b.end(i) - 0.05) return true;
                   }
                   return false;
                 };
@@ -1854,8 +1932,11 @@ jobs:
                   if (isTimeBuffered(t)) return true;
                   const b = videoEl.buffered;
                   for (let i = 0; i < b.length; i++) {
-                    if (b.start(i) > t && b.start(i) - t <= 2.8 && b.end(i) > b.start(i) + 0.1) {
-                      videoEl.currentTime = b.start(i) + 0.04;
+                    if (b.start(i) > t && b.start(i) - t <= 2.2 && b.end(i) > b.start(i) + 0.1) {
+                      // Set guard flag so nudging currentTime NEVER triggers onseeking loop!
+                      isInternalTimeAdjust = true;
+                      videoEl.currentTime = b.start(i) + 0.05;
+                      setTimeout(() => { isInternalTimeAdjust = false; }, 120);
                       return true;
                     }
                   }
@@ -1883,39 +1964,47 @@ jobs:
                       }
                     }
                   }
-                }, 180);
+                }, 220);
 
-                // PREEMPTIVE TIMELINE SEEK HANDLER: terminates busy workers & swaps in warm standby workers in 0ms!
+                // FREEZE-FREE SEEK HANDLER: debounced, ignores internal adjustments, never terminates WASM workers!
                 let seekDebounceTimer = null;
                 videoEl.onseeking = () => {
+                  if (isInternalTimeAdjust) return;
                   auxAudio.pause();
                   if (seekDebounceTimer) clearTimeout(seekDebounceTimer);
-                  const targetTime = videoEl.currentTime;
 
+                  const targetTime = videoEl.currentTime;
                   if (isTimeBuffered(targetTime)) {
-                    snapIntoBufferIfNear();
                     setOverlayBadge("");
                     try { auxAudio.currentTime = videoEl.currentTime; } catch (e) {}
                     if (!videoEl.paused) auxAudio.play().catch(() => {});
                     return;
                   }
 
-                  setOverlayBadge(`⚡ Loading ${formatTimeMmSs(targetTime)}...`);
-                  seekDebounceTimer = setTimeout(async () => {
-                    const targetIdx = findSegIdxForTime(videoEl.currentTime);
+                  const targetIdx = findSegIdxForTime(targetTime);
+                  // If we are already seeking to this exact segment, do not reset!
+                  if (targetIdx === activeSeekTargetIdx) return;
 
+                  setOverlayBadge(`⚡ Seeking to ${formatTimeMmSs(targetTime)}...`);
+                  seekDebounceTimer = setTimeout(() => {
+                    const finalTime = videoEl.currentTime;
+                    if (isTimeBuffered(finalTime)) {
+                      setOverlayBadge("");
+                      return;
+                    }
+                    const finalIdx = findSegIdxForTime(finalTime);
+                    if (finalIdx === activeSeekTargetIdx) return;
+
+                    activeSeekTargetIdx = finalIdx;
                     seekEpoch++;
                     completedMap.clear();
-                    inProgressSet.clear();
-                    nextAppendIdx = targetIdx;
+                    nextAppendIdx = finalIdx;
                     needsOffsetReset = true;
-
-                    await preemptBusyWorkersForInstantSeek();
-                  }, 90);
+                  }, 250);
                 };
 
                 const pickNextSegmentToEncode = () => {
-                  const maxAhead = Math.min(segments.length - 1, nextAppendIdx + 16);
+                  const maxAhead = Math.min(segments.length - 1, nextAppendIdx + 14);
                   for (let s = nextAppendIdx; s <= maxAhead; s++) {
                     if (!appendedSet.has(s) && !completedMap.has(s) && !inProgressSet.has(s)) {
                       return s;
@@ -1924,25 +2013,20 @@ jobs:
                   return -1;
                 };
 
-                // 4 Parallel Worker Loops
+                // 2 Persistent Worker Loops (never terminated, zero memory leak)
                 const runWorkerLoop = async (wIdx) => {
                   while (jobId === activeStreamJobId && mediaSource.readyState === 'open') {
-                    if (ffmpegBusyFlags[wIdx]) {
-                      await new Promise(r => setTimeout(r, 60));
-                      continue;
-                    }
-
                     const segIdx = pickNextSegmentToEncode();
                     if (segIdx === -1) {
                       if (appendedSet.size >= segments.length) break;
-                      await new Promise(r => setTimeout(r, 120));
+                      await new Promise(r => setTimeout(r, 150));
                       continue;
                     }
 
                     const myEpoch = seekEpoch;
                     inProgressSet.add(segIdx);
 
-                    const data = await encodeKeyframeSegmentOnWorker(wIdx, segments[segIdx], 0);
+                    const data = await encodeKeyframeSegmentOnWorker(wIdx, segments[segIdx]);
                     inProgressSet.delete(segIdx);
 
                     if (jobId !== activeStreamJobId || mediaSource.readyState !== 'open') break;
@@ -1953,6 +2037,7 @@ jobs:
 
                       const curPlayIdx = findSegIdxForTime(videoEl.currentTime);
                       if (appendedSet.has(curPlayIdx) || isTimeBuffered(videoEl.currentTime)) {
+                        activeSeekTargetIdx = -1;
                         snapIntoBufferIfNear();
                         setOverlayBadge("");
                         if (!videoEl.paused) {
@@ -1972,12 +2057,12 @@ jobs:
                 }
               }
 
-              async function playMediaChunksInNativePlayer(rawChunks, ext, firstChunkBytes, setStatus) {
+              async function playMediaChunksInBrowserPlayer(rawChunks, ext, firstChunkBytes, setStatus) {
                 activeStreamJobId++;
                 const videoEl = document.getElementById('vlockVideoPlayer');
                 videoEl.pause();
                 clearPlayerListeners();
-
+                document.getElementById('mobileReadyPanel').classList.remove('active');
                 document.getElementById('instantKeyModal').classList.remove('show');
 
                 const expectVideo = !isAudioOnlyExt(ext);
@@ -1988,9 +2073,8 @@ jobs:
 
                 const rawMediaBlob = new Blob(rawChunks);
 
-                // Stage 1: Direct native playback for MP4/WebM (~0.8s)
                 if (!isMkvSignature && e !== '.mkv') {
-                  setStatus("Starting Native Player...", true);
+                  setStatus("Starting Browser Player...", true);
                   const mime = e === '.webm' ? 'video/webm' : 'video/mp4';
                   const ok = await tryPlayOnRealVideoPlayer(videoEl, new Blob(rawChunks, { type: mime }), expectVideo, 1000);
                   if (ok) {
@@ -2003,7 +2087,6 @@ jobs:
                   }
                 }
 
-                // Stage 2: Ensure 4-Worker Parallel Pool + Split Worker are ready
                 await ensureFfmpegPoolLoaded((msg) => setStatus(msg, true));
 
                 const stamp = Date.now();
@@ -2017,7 +2100,6 @@ jobs:
                 } catch (e) {}
                 const probeInfo = parseFfmpegProbeLogs(ffmpegLastLogs.join('\n'));
 
-                // Stage 3: If video is standard 8-bit H.264 inside MKV, do a 1-second lossless copy + synced audio
                 if (probeInfo.videoCodec === 'h264' && !probeInfo.is10Bit) {
                   setStatus("Remuxing H.264 to Native MP4 (1s)...", true);
                   const outRemux = `remux_${stamp}.mp4`;
@@ -2049,11 +2131,11 @@ jobs:
                   } catch (e) {}
                 }
 
-                // Stage 4: 4-Worker Parallel Keyframe HD Streamer (zero redundant decode, on-demand read, fast seek)
-                await startFourWorkerKeyframeStream(inName, rawMediaBlob, probeInfo, setStatus);
+                await startBrowserMseStream(inName, rawMediaBlob, probeInfo, setStatus);
               }
 
-              async function handleDecryptAndWatch() {
+              async function handleDecryptAndWatch(playerMode = "mobile") {
+                pendingPlayerMode = playerMode;
                 const rawKey = document.getElementById('viewerKeyInput').value.trim().toUpperCase();
                 if (!rawKey) {
                   alert("Please paste your One-Time Key or Permanent Masterkey.");
@@ -2068,15 +2150,14 @@ jobs:
                 }
 
                 const btn = document.getElementById('btnDecryptWatch');
-                const modalBtn = document.getElementById('btnModalDecryptWatch');
+                const btnMob = document.getElementById('btnModalMobilePlayer');
+                const btnBrw = document.getElementById('btnModalBrowserPlayer');
 
                 const setStatus = (txt, active) => {
                   btn.disabled = active;
-                  btn.textContent = active && txt ? txt : "▶ Decrypt & Watch / Unlock";
-                  if (modalBtn) {
-                    modalBtn.disabled = active;
-                    modalBtn.textContent = active && txt ? txt : "▶ Decrypt & Watch Now";
-                  }
+                  btn.textContent = active && txt ? txt : "▶ Decrypt & Choose Player (Mobile / Browser)";
+                  if (btnMob) btnMob.disabled = active;
+                  if (btnBrw) btnBrw.disabled = active;
                 };
 
                 setStatus("Verifying Key & Decrypting...", true);
@@ -2139,7 +2220,11 @@ jobs:
                       const dotIdx = (selectedVlockFile.name || '').lastIndexOf('.');
                       const rawExt = dotIdx >= 0 ? selectedVlockFile.name.slice(dotIdx).toLowerCase() : '.mp4';
                       const rawBuf = await selectedVlockFile.arrayBuffer();
-                      await playMediaChunksInNativePlayer([rawBuf], rawExt, probeBytes.slice(0, 64), setStatus);
+                      if (playerMode === 'mobile') {
+                        await launchInMobilePlayer([rawBuf], rawExt, probeBytes.slice(0, 64), selectedVlockFile.name);
+                      } else {
+                        await playMediaChunksInBrowserPlayer([rawBuf], rawExt, probeBytes.slice(0, 64), setStatus);
+                      }
                       return;
                     }
 
@@ -2247,7 +2332,15 @@ jobs:
                     return;
                   }
 
-                  await playMediaChunksInNativePlayer(blobParts, ext, firstChunkBytes, setStatus);
+                  lastDecryptedChunks = blobParts;
+                  lastDecryptedExt = ext;
+                  lastDecryptedFirstBytes = firstChunkBytes;
+
+                  if (playerMode === 'mobile') {
+                    await launchInMobilePlayer(blobParts, ext, firstChunkBytes, activeFileBlob.name || 'Video');
+                  } else {
+                    await playMediaChunksInBrowserPlayer(blobParts, ext, firstChunkBytes, setStatus);
+                  }
 
                   // Burn temporary key after playable stream is active
                   burnedKeys[keyHex] = Date.now();
@@ -2477,10 +2570,6 @@ jobs:
                 refreshAdminLockUI();
                 checkRedirectedVideoLaunch();
 
-                setTimeout(() => {
-                  ensureFfmpegPoolLoaded(() => {}).catch(() => {});
-                }, 500);
-
                 bindDropZone('viewerDropZone', 'vlockFileInput', (f) => onVlockFilePicked(f, true));
                 bindDropZone('encryptDropZone', 'rawMediaInput', onRawMediaPicked);
 
@@ -2494,15 +2583,75 @@ jobs:
                 document.getElementById('modalViewerKeyInput').addEventListener('input', (e) => {
                   document.getElementById('viewerKeyInput').value = e.target.value;
                 });
+                document.getElementById('viewerKeyInput').addEventListener('input', (e) => {
+                  document.getElementById('modalViewerKeyInput').value = e.target.value;
+                });
                 document.getElementById('modalViewerKeyInput').addEventListener('keydown', (e) => {
                   if (e.key === 'Enter') {
                     document.getElementById('viewerKeyInput').value = e.target.value;
-                    handleDecryptAndWatch();
+                    handleDecryptAndWatch('mobile');
                   }
                 });
-                document.getElementById('btnModalDecryptWatch').addEventListener('click', () => {
+
+                // Option 1: Mobile Player (Recommended — Works with all players)
+                document.getElementById('btnModalMobilePlayer').addEventListener('click', () => {
                   document.getElementById('viewerKeyInput').value = document.getElementById('modalViewerKeyInput').value;
-                  handleDecryptAndWatch();
+                  handleDecryptAndWatch('mobile');
+                });
+
+                // Option 2: Browser Player
+                document.getElementById('btnModalBrowserPlayer').addEventListener('click', () => {
+                  document.getElementById('viewerKeyInput').value = document.getElementById('modalViewerKeyInput').value;
+                  handleDecryptAndWatch('browser');
+                });
+
+                // Main panel button opens the 2-Option Player Chooser modal
+                document.getElementById('btnDecryptWatch').addEventListener('click', () => {
+                  const mainKey = document.getElementById('viewerKeyInput').value.trim();
+                  if (mainKey) {
+                    document.getElementById('modalViewerKeyInput').value = mainKey;
+                  }
+                  if (selectedVlockFile) {
+                    const sizeMb = (selectedVlockFile.size / (1024 * 1024)).toFixed(1);
+                    document.getElementById('instantKeyModalFileLabel').textContent = `🎬 ${selectedVlockFile.name} (${sizeMb} MB) — Choose Player:`;
+                  }
+                  document.getElementById('instantKeyModal').classList.add('show');
+                });
+
+                // Mobile Player Ready Panel Actions
+                document.getElementById('btnShareToMobileApp').addEventListener('click', async () => {
+                  if (lastDecryptedFileObj && navigator.canShare && navigator.canShare({ files: [lastDecryptedFileObj] })) {
+                    try {
+                      await navigator.share({
+                        files: [lastDecryptedFileObj],
+                        title: lastDecryptedCleanName
+                      });
+                      return;
+                    } catch (e) {}
+                  }
+                  if (lastDecryptedChunks) {
+                    const mime = getNativeMediaMime(lastDecryptedExt);
+                    await saveBlobToDisk(new Blob(lastDecryptedChunks, { type: mime }), lastDecryptedCleanName);
+                  }
+                });
+
+                document.getElementById('btnReopenMobileFile').addEventListener('click', async () => {
+                  if (lastDecryptedChunks) {
+                    const mime = getNativeMediaMime(lastDecryptedExt);
+                    await saveBlobToDisk(new Blob(lastDecryptedChunks, { type: mime }), lastDecryptedCleanName);
+                  }
+                });
+
+                document.getElementById('btnSwitchToBrowserPlayer').addEventListener('click', async () => {
+                  if (lastDecryptedChunks) {
+                    const btn = document.getElementById('btnDecryptWatch');
+                    const setStatus = (txt, active) => {
+                      btn.disabled = active;
+                      btn.textContent = active && txt ? txt : "▶ Decrypt & Choose Player (Mobile / Browser)";
+                    };
+                    await playMediaChunksInBrowserPlayer(lastDecryptedChunks, lastDecryptedExt, lastDecryptedFirstBytes, setStatus);
+                    setStatus("", false);
+                  }
                 });
 
                 document.getElementById('tabBtnUser').addEventListener('click', () => switchTutorialTab('user'));
@@ -2541,7 +2690,7 @@ jobs:
                 document.getElementById('menuCopyright').addEventListener('click', () => {
                   document.getElementById('infoModalTitle').textContent = "Copyright & Legal Notice";
                   document.getElementById('infoModalBody').textContent =
-                    "VLock Media Security Suite v4.4\n© 2026 VLock Studio. All Rights Reserved.\n\n" +
+                    "VLock Media Security Suite v4.5\n© 2026 VLock Studio. All Rights Reserved.\n\n" +
                     "This software and its cryptographic stream architecture are protected by copyright law and international treaties. " +
                     "Unauthorized reproduction, reverse engineering, or tampering may result in severe civil and criminal penalties.\n\n" +
                     "For any issue contact @Modrat_editor using Telegram.";
@@ -2581,7 +2730,6 @@ jobs:
                 });
 
                 document.getElementById('btnActivateSession').addEventListener('click', handleActivateSessionKey);
-                document.getElementById('btnDecryptWatch').addEventListener('click', handleDecryptAndWatch);
                 document.getElementById('btnStartEncrypt').addEventListener('click', handleStartEncryption);
 
                 document.getElementById('btnCopyBotKeys').addEventListener('click', () => {
